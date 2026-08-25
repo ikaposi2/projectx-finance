@@ -45,7 +45,8 @@ uvicorn app.main:app --reload --port 8007
 | GET | `/billing/candidates` | manager+ | Projects ready to invoice + actions |
 | POST | `/invoices/generate` | manager+ | Create draft from project + kind |
 | GET | `/invoices` | manager+ | List invoices (with lines) |
-| PATCH | `/invoices/{id}` | manager+ | `draft` → `issued` (send) → `paid` \| `returned`; `paid` → `issued`; `returned` → `draft` |
+| PATCH | `/invoices/{id}` | manager+ | `draft` → `issued` (send) → `paid` \| `returned`; `paid` → `issued` |
+| DELETE | `/invoices/{id}` | manager+ | Remove `draft` or `returned` invoice (unlocks hours) |
 | GET | `/invoices/{id}/pdf` | manager+ | Download archived PDF (generated on send) |
 | GET | `/invoices/agenda?week_start=` | manager+ | Due dates for ISO week + overdue issued invoices |
 | GET | `/compensation` | manager+ | Applied ledger entries with partner names |

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -340,13 +340,15 @@ async def update_invoice_status(
         "draft": {"issued"},
         "issued": {"paid", "returned"},
         "paid": {"issued"},
-        "returned": {"draft"},
+        "returned": set(),
     }
     if status != row.status and status not in transitions.get(row.status, set()):
         raise ValueError("invalid_transition")
 
     now = datetime.now(timezone.utc)
     if status == "issued" and row.status == "draft":
+        if not (row.invoice_number or "").strip():
+            raise ValueError("missing_invoice_number")
         row.issued_at = now
         terms = int(row.payment_terms_days or 30)
         row.due_date = now + timedelta(days=terms)
@@ -362,6 +364,21 @@ async def update_invoice_status(
     await db.commit()
     await db.refresh(row)
     return row
+
+
+async def delete_invoice(db: AsyncSession, row: Invoice) -> None:
+    """Remove draft or returned invoices (and unlock linked hours)."""
+    if row.status not in {"draft", "returned"}:
+        raise ValueError("cannot_delete_status")
+    if row.pdf_path:
+        from app.services.pdf import resolve_pdf_absolute
+
+        path = resolve_pdf_absolute(row.pdf_path)
+        if path.is_file():
+            path.unlink(missing_ok=True)
+    await db.execute(delete(InvoiceLine).where(InvoiceLine.invoice_id == row.id))
+    await db.delete(row)
+    await db.commit()
 
 
 async def invoice_agenda(

@@ -361,3 +361,19 @@ async def patch_invoice(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return await _to_invoice(db, row)
+
+
+@router.delete("/invoices/{invoice_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_invoice(
+    invoice_id: str,
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    _require_manager(principal)
+    row = await ledger.get_invoice(db, tenant_id=principal.tenant_id, invoice_id=invoice_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    try:
+        await ledger.delete_invoice(db, row)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

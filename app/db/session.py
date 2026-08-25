@@ -40,6 +40,13 @@ async def init_db() -> None:
             await conn.execute(
                 text(f"ALTER TABLE invoices ADD COLUMN IF NOT EXISTS {column} {definition}")
             )
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_invoices_tenant_number "
+                "ON invoices (tenant_id, invoice_number) "
+                "WHERE invoice_number <> ''"
+            )
+        )
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

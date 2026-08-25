@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -21,8 +21,15 @@ class BillingError(Exception):
 
 
 def _format_address(parts: list[str | None]) -> str | None:
-    cleaned = [p.strip() for p in parts if p and str(p).strip()]
-    return ", ".join(cleaned) if cleaned else None
+    """Multiline postal address (line1, line2, postal+city, country)."""
+    line1 = (parts[0] or "").strip() if len(parts) > 0 else ""
+    line2 = (parts[1] or "").strip() if len(parts) > 1 else ""
+    postal = (parts[2] or "").strip() if len(parts) > 2 else ""
+    city = (parts[3] or "").strip() if len(parts) > 3 else ""
+    country = (parts[4] or "").strip() if len(parts) > 4 else ""
+    city_line = " ".join(p for p in (postal, city) if p)
+    lines = [x for x in (line1, line2, city_line, country) if x]
+    return "\n".join(lines) if lines else None
 
 
 async def get_or_create_company(db: AsyncSession, tenant_id: str) -> CompanyProfile:
@@ -56,15 +63,25 @@ async def update_company(db: AsyncSession, row: CompanyProfile, data: dict) -> C
 
 
 async def next_invoice_number(db: AsyncSession, tenant_id: str) -> str:
+    """Sequential unique number per tenant/year: INV-2026-0001."""
     year = datetime.now(timezone.utc).year
     prefix = f"INV-{year}-"
-    result = await db.scalar(
-        select(func.count())
-        .select_from(Invoice)
-        .where(Invoice.tenant_id == tenant_id, Invoice.invoice_number.like(f"{prefix}%"))
+    rows = await db.scalars(
+        select(Invoice.invoice_number).where(
+            Invoice.tenant_id == tenant_id,
+            Invoice.invoice_number.like(f"{prefix}%"),
+        )
     )
-    seq = int(result or 0) + 1
-    return f"{prefix}{seq:04d}"
+    max_seq = 0
+    for num in rows:
+        if not num:
+            continue
+        suffix = str(num)[len(prefix) :]
+        try:
+            max_seq = max(max_seq, int(suffix))
+        except ValueError:
+            continue
+    return f"{prefix}{max_seq + 1:04d}"
 
 
 async def billed_amount_for_project(db: AsyncSession, *, tenant_id: str, project_id: str) -> float:
