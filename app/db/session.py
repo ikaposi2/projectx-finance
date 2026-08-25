@@ -26,6 +26,10 @@ _INVOICE_COLUMNS = (
     ("vat_rate", "DOUBLE PRECISION NOT NULL DEFAULT 21"),
     ("vat_eur", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
     ("payment_terms_days", "INTEGER NOT NULL DEFAULT 30"),
+    ("issued_at", "TIMESTAMPTZ"),
+    ("due_date", "TIMESTAMPTZ"),
+    ("returned_at", "TIMESTAMPTZ"),
+    ("pdf_path", "VARCHAR(500)"),
 )
 
 

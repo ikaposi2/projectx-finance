@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -129,13 +129,14 @@ async def list_compensation_effects(db: AsyncSession, *, tenant_id: str) -> list
 
 
 async def invoiced_time_entry_ids(db: AsyncSession, *, tenant_id: str) -> set[str]:
+    """Hours lock only after invoice is sent (issued) or paid."""
     rows = await db.scalars(
         select(InvoiceLine.time_entry_id)
         .join(Invoice, Invoice.id == InvoiceLine.invoice_id)
         .where(
             InvoiceLine.tenant_id == tenant_id,
             InvoiceLine.time_entry_id.is_not(None),
-            Invoice.status.in_(("draft", "issued", "paid")),
+            Invoice.status.in_(("issued", "paid")),
         )
     )
     return {str(x) for x in rows if x}
@@ -325,18 +326,86 @@ async def get_invoice(db: AsyncSession, *, tenant_id: str, invoice_id: str) -> I
     return row
 
 
-async def update_invoice_status(db: AsyncSession, row: Invoice, *, status: str) -> Invoice:
-    allowed = {"draft", "issued", "paid"}
+async def update_invoice_status(
+    db: AsyncSession,
+    row: Invoice,
+    *,
+    status: str,
+    lines: list[InvoiceLine] | None = None,
+) -> Invoice:
+    allowed = {"draft", "issued", "paid", "returned"}
     if status not in allowed:
         raise ValueError("invalid_status")
     transitions = {
         "draft": {"issued"},
-        "issued": {"paid", "draft"},
+        "issued": {"paid", "returned"},
         "paid": {"issued"},
+        "returned": {"draft"},
     }
     if status != row.status and status not in transitions.get(row.status, set()):
         raise ValueError("invalid_transition")
+
+    now = datetime.now(timezone.utc)
+    if status == "issued" and row.status == "draft":
+        row.issued_at = now
+        terms = int(row.payment_terms_days or 30)
+        row.due_date = now + timedelta(days=terms)
+        row.returned_at = None
+        if lines is not None:
+            from app.services.pdf import generate_invoice_pdf
+
+            row.pdf_path = generate_invoice_pdf(row, lines)
+    elif status == "returned":
+        row.returned_at = now
+
     row.status = status
     await db.commit()
     await db.refresh(row)
     return row
+
+
+async def invoice_agenda(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    week_start: date,
+) -> list[dict]:
+    week_end = week_start + timedelta(days=6)
+    today = datetime.now(timezone.utc).date()
+
+    rows = await db.scalars(
+        select(Invoice).where(
+            Invoice.tenant_id == tenant_id,
+            Invoice.status == "issued",
+        )
+    )
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for inv in rows:
+        if inv.due_date is None:
+            continue
+        due = inv.due_date.date() if inv.due_date.tzinfo else inv.due_date.replace(tzinfo=timezone.utc).date()
+        overdue = due < today
+        in_week = week_start <= due <= week_end
+        if not overdue and not in_week:
+            continue
+        if inv.id in seen:
+            continue
+        seen.add(inv.id)
+        days_until = (due - today).days
+        out.append(
+            {
+                "invoice_id": inv.id,
+                "invoice_number": inv.invoice_number or inv.id[:8],
+                "customer_name": inv.customer_name,
+                "amount_eur": float(inv.amount_eur or 0),
+                "due_date": due.isoformat(),
+                "days_until_due": days_until,
+                "overdue": overdue,
+                "has_pdf": bool(inv.pdf_path),
+            }
+        )
+
+    out.sort(key=lambda r: (not r["overdue"], r["due_date"]))
+    return out

@@ -118,13 +118,28 @@ class InvoiceOut(BaseModel):
     vat_eur: float = 0
     amount_eur: float
     payment_terms_days: int = 30
+    issued_at: str | None = None
+    due_date: str | None = None
+    returned_at: str | None = None
+    pdf_path: str | None = None
     status: str
     notes: str | None
     lines: list[InvoiceLineOut] = Field(default_factory=list)
 
 
 class InvoiceUpdate(BaseModel):
-    status: str = Field(pattern="^(draft|issued|paid)$")
+    status: str = Field(pattern="^(draft|issued|paid|returned)$")
+
+
+class InvoiceAgendaItem(BaseModel):
+    invoice_id: str
+    invoice_number: str
+    customer_name: str
+    amount_eur: float
+    due_date: str
+    days_until_due: int
+    overdue: bool
+    has_pdf: bool
 
 
 class InvoiceGenerate(BaseModel):

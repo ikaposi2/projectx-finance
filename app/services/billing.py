@@ -72,7 +72,7 @@ async def billed_amount_for_project(db: AsyncSession, *, tenant_id: str, project
         select(Invoice).where(
             Invoice.tenant_id == tenant_id,
             Invoice.project_id == project_id,
-            Invoice.status.in_(("draft", "issued", "paid")),
+            Invoice.status.in_(("issued", "paid")),
             Invoice.kind.in_(("fixed_completion", "fixed_milestone_50")),
         )
     )
@@ -85,7 +85,7 @@ async def has_milestone_invoice(db: AsyncSession, *, tenant_id: str, project_id:
             Invoice.tenant_id == tenant_id,
             Invoice.project_id == project_id,
             Invoice.kind == "fixed_milestone_50",
-            Invoice.status.in_(("draft", "issued", "paid")),
+            Invoice.status.in_(("issued", "paid")),
         ).limit(1)
     )
     return row is not None
@@ -97,7 +97,7 @@ async def billed_time_entry_ids(db: AsyncSession, *, tenant_id: str, project_id:
             Invoice.tenant_id == tenant_id,
             Invoice.project_id == project_id,
             Invoice.kind == "tm_hours",
-            Invoice.status.in_(("draft", "issued", "paid")),
+            Invoice.status.in_(("issued", "paid")),
         )
     )
     ids = list(inv_ids)

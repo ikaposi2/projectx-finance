@@ -32,6 +32,7 @@ uvicorn app.main:app --reload --port 8007
 | `IDENTITY_SERVICE_URL` | | Resolve partner display names |
 | `TIME_SERVICE_URL` | | Undo compensation via refuse |
 | `COMPANY_*` | | Seller defaults for company profile bootstrap |
+| `ARCHIVE_ROOT` | `/var/archive` | Invoice PDF archive (PVC in cluster) |
 | `CORS_ORIGINS` | localhost Vite | Browser origins |
 
 ## API (behind `/api/finance` in cluster)
@@ -44,7 +45,9 @@ uvicorn app.main:app --reload --port 8007
 | GET | `/billing/candidates` | manager+ | Projects ready to invoice + actions |
 | POST | `/invoices/generate` | manager+ | Create draft from project + kind |
 | GET | `/invoices` | manager+ | List invoices (with lines) |
-| PATCH | `/invoices/{id}` | manager+ | `draft` → `issued` → `paid` |
+| PATCH | `/invoices/{id}` | manager+ | `draft` → `issued` (send) → `paid` \| `returned`; `paid` → `issued`; `returned` → `draft` |
+| GET | `/invoices/{id}/pdf` | manager+ | Download archived PDF (generated on send) |
+| GET | `/invoices/agenda?week_start=` | manager+ | Due dates for ISO week + overdue issued invoices |
 | GET | `/compensation` | manager+ | Applied ledger entries with partner names |
 | POST | `/compensation/{time_entry_id}/undo` | manager+ | Refuse related time entry + reverse ledger |
 | GET | `/reserve` | manager+ | Reserve from **net** revenue (ex VAT) vs target |
@@ -61,6 +64,8 @@ uvicorn app.main:app --reload --port 8007
 
 Invoices snapshot seller (company) and buyer (customer bill-to / MSP parent), VAT, and line items.
 
+On **send** (`draft` → `issued`): sets `issued_at`, `due_date` (issue + payment terms), generates a PDF under `ARCHIVE_ROOT`, and **locks** linked time entries. **Returned** invoices unlock hours again. Only `issued` and `paid` invoices count toward billed amounts and hour locks.
+
 ## Event handling
 
 | Event | Effect |
@@ -75,6 +80,7 @@ VAT on issued/paid invoices accumulates in a separate account by calendar quarte
 
 ## Out of scope (v1)
 
-- PDF/email invoicing
+- Bank account linking / automatic payment detection (deferred)
+- Email delivery of invoices
 - Year-end 50/50 bonus workflow
 - Month-scoped T&M batching UI

@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -7,6 +10,7 @@ from app.api.schemas import (
     CompanyProfileOut,
     CompanyProfileUpdate,
     CompensationEffectOut,
+    InvoiceAgendaItem,
     InvoiceGenerate,
     InvoiceLineOut,
     InvoiceOut,
@@ -28,6 +32,7 @@ from app.services.billing import (
     update_company,
 )
 from app.services.clients import UpstreamError, fetch_bookable_projects, fetch_user_names, refuse_time_entry
+from app.services.pdf import resolve_pdf_absolute
 
 router = APIRouter(tags=["finance"])
 security = HTTPBearer(auto_error=False)
@@ -74,6 +79,10 @@ async def _to_invoice(db: AsyncSession, row) -> InvoiceOut:
         vat_eur=float(getattr(row, "vat_eur", None) or 0),
         amount_eur=float(row.amount_eur or 0),
         payment_terms_days=int(getattr(row, "payment_terms_days", None) or 30),
+        issued_at=row.issued_at.isoformat() if getattr(row, "issued_at", None) else None,
+        due_date=row.due_date.isoformat() if getattr(row, "due_date", None) else None,
+        returned_at=row.returned_at.isoformat() if getattr(row, "returned_at", None) else None,
+        pdf_path=getattr(row, "pdf_path", None),
         status=row.status,
         notes=row.notes,
         lines=[
@@ -307,6 +316,34 @@ async def post_generate_invoice(
     return await _to_invoice(db, row)
 
 
+@router.get("/invoices/agenda", response_model=list[InvoiceAgendaItem])
+async def get_invoice_agenda(
+    week_start: date = Query(..., description="ISO week start (Monday)"),
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+) -> list[InvoiceAgendaItem]:
+    _require_manager(principal)
+    rows = await ledger.invoice_agenda(db, tenant_id=principal.tenant_id, week_start=week_start)
+    return [InvoiceAgendaItem(**r) for r in rows]
+
+
+@router.get("/invoices/{invoice_id}/pdf")
+async def get_invoice_pdf(
+    invoice_id: str,
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+):
+    _require_manager(principal)
+    row = await ledger.get_invoice(db, tenant_id=principal.tenant_id, invoice_id=invoice_id)
+    if row is None or not row.pdf_path:
+        raise HTTPException(status_code=404, detail="not_found")
+    path = resolve_pdf_absolute(row.pdf_path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="pdf_missing")
+    filename = f"{row.invoice_number or invoice_id}.pdf"
+    return FileResponse(path, media_type="application/pdf", filename=filename)
+
+
 @router.patch("/invoices/{invoice_id}", response_model=InvoiceOut)
 async def patch_invoice(
     invoice_id: str,
@@ -318,8 +355,9 @@ async def patch_invoice(
     row = await ledger.get_invoice(db, tenant_id=principal.tenant_id, invoice_id=invoice_id)
     if row is None:
         raise HTTPException(status_code=404, detail="not_found")
+    lines = await list_invoice_lines(db, row.id) if body.status == "issued" else None
     try:
-        row = await ledger.update_invoice_status(db, row, status=body.status)
+        row = await ledger.update_invoice_status(db, row, status=body.status, lines=lines)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return await _to_invoice(db, row)

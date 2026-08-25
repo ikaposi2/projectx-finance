@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     company_bank_account: str = Field(default="", validation_alias="COMPANY_BANK_ACCOUNT")
     company_address: str = Field(default="", validation_alias="COMPANY_ADDRESS")
     company_invoice_email: str = Field(default="", validation_alias="COMPANY_INVOICE_EMAIL")
+    archive_root: str = Field(default="/var/archive", validation_alias="ARCHIVE_ROOT")
     otel_exporter_otlp_endpoint: str | None = None
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
