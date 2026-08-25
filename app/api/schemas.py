@@ -35,6 +35,29 @@ class ReserveSnapshot(BaseModel):
     invoice_paid_eur: float
 
 
+class VatQuarterOut(BaseModel):
+    year: int
+    quarter: int
+    label: str
+    collected_eur: float
+    remitted_eur: float
+    outstanding_eur: float
+    can_remit: bool
+
+
+class VatAccountOut(BaseModel):
+    balance_eur: float
+    current_quarter: str
+    quarters: list[VatQuarterOut]
+
+
+class VatRemitRequest(BaseModel):
+    year: int
+    quarter: int = Field(ge=1, le=4)
+    amount_eur: float | None = Field(default=None, ge=0)
+    notes: str | None = Field(default=None, max_length=500)
+
+
 class CompanyProfileOut(BaseModel):
     legal_name: str
     address_line1: str | None = None

@@ -47,7 +47,9 @@ uvicorn app.main:app --reload --port 8007
 | PATCH | `/invoices/{id}` | manager+ | `draft` → `issued` → `paid` |
 | GET | `/compensation` | manager+ | Applied ledger entries with partner names |
 | POST | `/compensation/{time_entry_id}/undo` | manager+ | Refuse related time entry + reverse ledger |
-| GET | `/reserve` | manager+ | Reserve target vs approximate current |
+| GET | `/reserve` | manager+ | Reserve from **net** revenue (ex VAT) vs target |
+| GET | `/vat` | manager+ | Separate VAT account by calendar quarter |
+| POST | `/vat/remit` | manager+ | Record quarterly VAT remittance to tax authority |
 
 ### Invoice kinds
 
@@ -67,7 +69,9 @@ Invoices snapshot seller (company) and buyer (customer bill-to / MSP parent), VA
 | `TimeEntryApproved` (`approved_non_billable`) | Chargeback hours × `INTERNAL_RATE_EUR` |
 | `TimeEntryRefused` / `TimeEntryReset` | Mark effect unapplied |
 
-Reserve estimate ≈ issued+paid invoice totals − chargeback euros (proxy until full P&L).
+Reserve estimate ≈ issued+paid **net** invoice totals − chargeback euros (VAT excluded — see VAT account).
+
+VAT on issued/paid invoices accumulates in a separate account by calendar quarter and is remitted every 3 months via `POST /vat/remit`.
 
 ## Out of scope (v1)
 

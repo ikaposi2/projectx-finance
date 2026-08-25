@@ -12,6 +12,8 @@ from app.api.schemas import (
     InvoiceOut,
     InvoiceUpdate,
     ReserveSnapshot,
+    VatAccountOut,
+    VatRemitRequest,
 )
 from app.auth.jwt import Principal, decode_access_token
 from app.core.config import get_settings
@@ -164,6 +166,39 @@ async def get_reserve(
     _require_manager(principal)
     snap = await ledger.reserve_snapshot(db, tenant_id=principal.tenant_id)
     return ReserveSnapshot(**snap)
+
+
+@router.get("/vat", response_model=VatAccountOut)
+async def get_vat_account(
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+) -> VatAccountOut:
+    _require_manager(principal)
+    snap = await ledger.vat_account_snapshot(db, tenant_id=principal.tenant_id)
+    return VatAccountOut(**snap)
+
+
+@router.post("/vat/remit", response_model=VatAccountOut)
+async def post_vat_remit(
+    body: VatRemitRequest,
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+) -> VatAccountOut:
+    """Record a quarterly VAT payment (money leaves the VAT account, not the reserve)."""
+    _require_manager(principal)
+    try:
+        await ledger.record_vat_remittance(
+            db,
+            tenant_id=principal.tenant_id,
+            year=body.year,
+            quarter=body.quarter,
+            amount_eur=body.amount_eur,
+            notes=body.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    snap = await ledger.vat_account_snapshot(db, tenant_id=principal.tenant_id)
+    return VatAccountOut(**snap)
 
 
 @router.get("/company", response_model=CompanyProfileOut)

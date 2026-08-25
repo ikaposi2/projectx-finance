@@ -1,13 +1,40 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.db.models import CompensationEffect, Invoice, InvoiceLine
+from app.db.models import CompensationEffect, Invoice, InvoiceLine, VatRemittance
 
 settings = get_settings()
 
+
+def _invoice_net(inv: Invoice) -> float:
+    """Revenue excluding VAT (VAT must not enter company reserve)."""
+    sub = float(getattr(inv, "subtotal_eur", None) or 0)
+    vat = float(getattr(inv, "vat_eur", None) or 0)
+    amount = float(inv.amount_eur or 0)
+    if sub > 0:
+        return sub
+    if vat > 0:
+        return round(max(0.0, amount - vat), 2)
+    return amount
+
+
+def _invoice_vat(inv: Invoice) -> float:
+    return float(getattr(inv, "vat_eur", None) or 0)
+
+
+def _quarter_key(dt: datetime) -> tuple[int, int]:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.year, (dt.month - 1) // 3 + 1
+
+
+def _quarter_label(year: int, quarter: int) -> str:
+    return f"{year}-Q{quarter}"
 
 async def apply_time_approval(
     db: AsyncSession,
@@ -149,15 +176,16 @@ async def reserve_snapshot(db: AsyncSession, *, tenant_id: str) -> dict:
     paid_eur = 0.0
     draft_eur = 0.0
     for inv in invoices:
+        net = _invoice_net(inv)
         if inv.status == "issued":
-            issued_eur += float(inv.amount_eur)
+            issued_eur += net
         elif inv.status == "paid":
-            paid_eur += float(inv.amount_eur)
+            paid_eur += net
         elif inv.status == "draft":
-            draft_eur += float(inv.amount_eur)
+            draft_eur += net
 
+    # Net revenue only — VAT sits in the separate VAT account.
     revenue_eur = issued_eur + paid_eur
-    # Approximate internal P&L proxy until full cost model exists.
     current_reserve_eur = round(revenue_eur - chargeback_eur, 2)
     target = float(settings.reserve_target_eur)
     surplus = round(max(0.0, current_reserve_eur - target), 2)
@@ -173,6 +201,89 @@ async def reserve_snapshot(db: AsyncSession, *, tenant_id: str) -> dict:
         "invoice_issued_eur": round(issued_eur, 2),
         "invoice_paid_eur": round(paid_eur, 2),
     }
+
+
+async def vat_account_snapshot(db: AsyncSession, *, tenant_id: str) -> dict:
+    invoices = await db.scalars(
+        select(Invoice).where(
+            Invoice.tenant_id == tenant_id,
+            Invoice.status.in_(("issued", "paid")),
+        )
+    )
+    collected_by_q: dict[tuple[int, int], float] = {}
+    for inv in invoices:
+        dt = inv.created_at or datetime.now(timezone.utc)
+        key = _quarter_key(dt)
+        collected_by_q[key] = round(collected_by_q.get(key, 0.0) + _invoice_vat(inv), 2)
+
+    remits = await db.scalars(
+        select(VatRemittance).where(VatRemittance.tenant_id == tenant_id)
+    )
+    remitted_by_q: dict[tuple[int, int], float] = {}
+    for row in remits:
+        key = (int(row.year), int(row.quarter))
+        remitted_by_q[key] = round(remitted_by_q.get(key, 0.0) + float(row.amount_eur), 2)
+
+    now = datetime.now(timezone.utc)
+    cy, cq = _quarter_key(now)
+    keys = sorted(set(collected_by_q) | set(remitted_by_q) | {(cy, cq)}, reverse=True)
+
+    quarters: list[dict] = []
+    balance = 0.0
+    for year, quarter in keys:
+        collected = collected_by_q.get((year, quarter), 0.0)
+        remitted = remitted_by_q.get((year, quarter), 0.0)
+        outstanding = round(max(0.0, collected - remitted), 2)
+        balance = round(balance + outstanding, 2)
+        quarters.append(
+            {
+                "year": year,
+                "quarter": quarter,
+                "label": _quarter_label(year, quarter),
+                "collected_eur": collected,
+                "remitted_eur": remitted,
+                "outstanding_eur": outstanding,
+                "can_remit": outstanding > 0.009,
+            }
+        )
+
+    return {
+        "balance_eur": balance,
+        "current_quarter": _quarter_label(cy, cq),
+        "quarters": quarters,
+    }
+
+
+async def record_vat_remittance(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    year: int,
+    quarter: int,
+    amount_eur: float | None,
+    notes: str | None,
+) -> VatRemittance:
+    if quarter not in (1, 2, 3, 4):
+        raise ValueError("invalid_quarter")
+    snap = await vat_account_snapshot(db, tenant_id=tenant_id)
+    qrow = next((q for q in snap["quarters"] if q["year"] == year and q["quarter"] == quarter), None)
+    outstanding = float(qrow["outstanding_eur"]) if qrow else 0.0
+    pay = float(amount_eur) if amount_eur is not None else outstanding
+    if pay <= 0:
+        raise ValueError("nothing_to_remit")
+    if pay > outstanding + 0.009:
+        raise ValueError("amount_exceeds_outstanding")
+    row = VatRemittance(
+        tenant_id=tenant_id,
+        year=year,
+        quarter=quarter,
+        amount_eur=round(pay, 2),
+        notes=notes,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return row
 
 
 async def list_invoices(db: AsyncSession, *, tenant_id: str) -> list[Invoice]:

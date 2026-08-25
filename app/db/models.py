@@ -106,3 +106,17 @@ class InvoiceLine(Base):
     amount_eur: Mapped[float] = mapped_column(Float, default=0.0)
     source: Mapped[str] = mapped_column(String(40), default="manual")
     time_entry_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+
+
+class VatRemittance(Base):
+    """Quarterly VAT payment to the tax authority (every 3 months)."""
+
+    __tablename__ = "vat_remittances"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+    year: Mapped[int] = mapped_column(Integer)
+    quarter: Mapped[int] = mapped_column(Integer)  # 1..4
+    amount_eur: Mapped[float] = mapped_column(Float, default=0.0)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
