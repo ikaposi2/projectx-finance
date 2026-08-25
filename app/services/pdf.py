@@ -272,3 +272,7 @@ def generate_invoice_pdf(invoice: Invoice, lines: list[InvoiceLine]) -> str:
 
     rel = path.relative_to(Path(settings.archive_root))
     return str(rel).replace("\\", "/")
+
+
+def resolve_pdf_absolute(relative_path: str) -> Path:
+    return Path(settings.archive_root) / relative_path
