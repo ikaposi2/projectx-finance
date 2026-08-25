@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     nats_filter_subject: str = "projectx.events.time.>"
     internal_rate_eur: float = Field(default=75.0, validation_alias="INTERNAL_RATE_EUR")
     reserve_target_eur: float = Field(default=50_000.0, validation_alias="RESERVE_TARGET_EUR")
+    milestone_threshold_eur: float = Field(default=30_000.0, validation_alias="MILESTONE_THRESHOLD_EUR")
+    default_vat_rate: float = Field(default=21.0, validation_alias="DEFAULT_VAT_RATE")
+    project_service_url: str = Field(default="http://project:8000", validation_alias="PROJECT_SERVICE_URL")
+    customer_service_url: str = Field(default="http://customer:8000", validation_alias="CUSTOMER_SERVICE_URL")
+    company_legal_name: str = Field(default="Platform BV", validation_alias="COMPANY_LEGAL_NAME")
+    company_vat_id: str = Field(default="", validation_alias="COMPANY_VAT_ID")
+    company_coc_number: str = Field(default="", validation_alias="COMPANY_COC_NUMBER")
+    company_bank_account: str = Field(default="", validation_alias="COMPANY_BANK_ACCOUNT")
+    company_address: str = Field(default="", validation_alias="COMPANY_ADDRESS")
+    company_invoice_email: str = Field(default="", validation_alias="COMPANY_INVOICE_EMAIL")
     otel_exporter_otlp_endpoint: str | None = None
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

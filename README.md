@@ -1,10 +1,11 @@
 # projectX-finance
 
-Finance microservice: partner compensation ledger (incl. €75/h non-billable chargeback), company reserve snapshot, and draft invoices.
+Finance microservice: **customer billing** (invoices), plus internal partner chargeback / company reserve.
 
 - **Auth:** JWT issued by `projectX-identity` (shared `JWT_SECRET`)
 - **DB:** logical database `finance` on in-cluster Postgres
 - **Events:** durable consumer on `projectx.events.time.>` (`PROJECTX_EVENTS`)
+- **Upstream:** project + customer services for invoice generation
 
 ## Local run
 
@@ -25,6 +26,10 @@ uvicorn app.main:app --reload --port 8007
 | `NATS_CONSUMER` | `finance-time-entries` | Durable pull consumer |
 | `INTERNAL_RATE_EUR` | `75` | Non-billable chargeback rate |
 | `RESERVE_TARGET_EUR` | `50000` | Company reserve target |
+| `MILESTONE_THRESHOLD_EUR` | `30000` | Fixed-price assignments above this can take a 50% milestone invoice |
+| `PROJECT_SERVICE_URL` | | Fetch project progress / staffing |
+| `CUSTOMER_SERVICE_URL` | | Buyer / bill-to details |
+| `COMPANY_*` | | Seller defaults for company profile bootstrap |
 | `CORS_ORIGINS` | localhost Vite | Browser origins |
 
 ## API (behind `/api/finance` in cluster)
@@ -32,11 +37,24 @@ uvicorn app.main:app --reload --port 8007
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | GET | `/health` | no | Liveness |
+| GET | `/company` | manager+ | Seller profile (auto-created) |
+| PATCH | `/company` | manager+ | Update seller details |
+| GET | `/billing/candidates` | manager+ | Projects ready to invoice + actions |
+| POST | `/invoices/generate` | manager+ | Create draft from project + kind |
+| GET | `/invoices` | manager+ | List invoices (with lines) |
+| PATCH | `/invoices/{id}` | manager+ | `draft` → `issued` → `paid` |
 | GET | `/compensation` | manager+ | Per-partner billable hours + chargeback € |
 | GET | `/reserve` | manager+ | Reserve target vs approximate current |
-| GET | `/invoices` | manager+ | List invoices |
-| POST | `/invoices` | manager+ | Create draft invoice |
-| PATCH | `/invoices/{id}` | manager+ | `draft` → `issued` → `paid` |
+
+### Invoice kinds
+
+| Kind | When |
+|------|------|
+| `fixed_milestone_50` | Fixed price &gt; threshold, progress ≥ 50%, no prior milestone invoice |
+| `fixed_completion` | Progress `complete`, remaining fixed amount after prior invoices |
+| `tm_hours` | Unbilled approved billable hours × project staffing rates |
+
+Invoices snapshot seller (company) and buyer (customer bill-to / MSP parent), VAT, and line items.
 
 ## Event handling
 
@@ -52,4 +70,4 @@ Reserve estimate ≈ issued+paid invoice totals − chargeback euros (proxy unti
 
 - PDF/email invoicing
 - Year-end 50/50 bonus workflow
-- Billable euro rates from project staffing
+- Month-scoped T&M batching UI
