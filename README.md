@@ -29,6 +29,8 @@ uvicorn app.main:app --reload --port 8007
 | `MILESTONE_THRESHOLD_EUR` | `30000` | Fixed-price assignments above this can take a 50% milestone invoice |
 | `PROJECT_SERVICE_URL` | | Fetch project progress / staffing |
 | `CUSTOMER_SERVICE_URL` | | Buyer / bill-to details |
+| `IDENTITY_SERVICE_URL` | | Resolve partner display names |
+| `TIME_SERVICE_URL` | | Undo compensation via refuse |
 | `COMPANY_*` | | Seller defaults for company profile bootstrap |
 | `CORS_ORIGINS` | localhost Vite | Browser origins |
 
@@ -43,7 +45,8 @@ uvicorn app.main:app --reload --port 8007
 | POST | `/invoices/generate` | manager+ | Create draft from project + kind |
 | GET | `/invoices` | manager+ | List invoices (with lines) |
 | PATCH | `/invoices/{id}` | manager+ | `draft` → `issued` → `paid` |
-| GET | `/compensation` | manager+ | Per-partner billable hours + chargeback € |
+| GET | `/compensation` | manager+ | Applied ledger entries with partner names |
+| POST | `/compensation/{time_entry_id}/undo` | manager+ | Refuse related time entry + reverse ledger |
 | GET | `/reserve` | manager+ | Reserve target vs approximate current |
 
 ### Invoice kinds

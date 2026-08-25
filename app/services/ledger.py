@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.db.models import CompensationEffect, Invoice
+from app.db.models import CompensationEffect, Invoice, InvoiceLine
 
 settings = get_settings()
 
@@ -63,6 +63,7 @@ async def reverse_time_effect(db: AsyncSession, *, time_entry_id: str) -> bool:
 
 
 async def list_compensation(db: AsyncSession, *, tenant_id: str) -> list[dict]:
+    """Aggregated totals per partner (legacy summary)."""
     result = await db.scalars(
         select(CompensationEffect).where(
             CompensationEffect.tenant_id == tenant_id,
@@ -86,6 +87,44 @@ async def list_compensation(db: AsyncSession, *, tenant_id: str) -> list[dict]:
             bucket["chargeback_hours"] = round(bucket["chargeback_hours"] + float(row.hours), 2)
             bucket["chargeback_eur"] = round(bucket["chargeback_eur"] + float(row.amount_eur), 2)
     return sorted(by_partner.values(), key=lambda r: r["partner_id"])
+
+
+async def list_compensation_effects(db: AsyncSession, *, tenant_id: str) -> list[CompensationEffect]:
+    result = await db.scalars(
+        select(CompensationEffect)
+        .where(
+            CompensationEffect.tenant_id == tenant_id,
+            CompensationEffect.applied.is_(True),
+        )
+        .order_by(CompensationEffect.updated_at.desc())
+    )
+    return list(result)
+
+
+async def invoiced_time_entry_ids(db: AsyncSession, *, tenant_id: str) -> set[str]:
+    rows = await db.scalars(
+        select(InvoiceLine.time_entry_id)
+        .join(Invoice, Invoice.id == InvoiceLine.invoice_id)
+        .where(
+            InvoiceLine.tenant_id == tenant_id,
+            InvoiceLine.time_entry_id.is_not(None),
+            Invoice.status.in_(("draft", "issued", "paid")),
+        )
+    )
+    return {str(x) for x in rows if x}
+
+
+async def effect_is_invoiced(db: AsyncSession, *, tenant_id: str, time_entry_id: str) -> bool:
+    return time_entry_id in await invoiced_time_entry_ids(db, tenant_id=tenant_id)
+
+
+async def get_applied_effect(
+    db: AsyncSession, *, tenant_id: str, time_entry_id: str
+) -> CompensationEffect | None:
+    row = await db.get(CompensationEffect, time_entry_id)
+    if row is None or row.tenant_id != tenant_id or not row.applied:
+        return None
+    return row
 
 
 async def reserve_snapshot(db: AsyncSession, *, tenant_id: str) -> dict:

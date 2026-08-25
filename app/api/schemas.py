@@ -3,9 +3,23 @@ from pydantic import BaseModel, Field
 
 class CompensationRow(BaseModel):
     partner_id: str
+    partner_name: str = ""
     billable_hours: float
     chargeback_hours: float
     chargeback_eur: float
+
+
+class CompensationEffectOut(BaseModel):
+    time_entry_id: str
+    partner_id: str
+    partner_name: str
+    project_id: str | None = None
+    classification: str
+    hours: float
+    rate_eur: float
+    amount_eur: float
+    can_undo: bool = True
+    updated_at: str | None = None
 
 
 class ReserveSnapshot(BaseModel):

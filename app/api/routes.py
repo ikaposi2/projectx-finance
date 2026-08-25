@@ -6,7 +6,7 @@ from app.api.schemas import (
     BillingCandidate,
     CompanyProfileOut,
     CompanyProfileUpdate,
-    CompensationRow,
+    CompensationEffectOut,
     InvoiceGenerate,
     InvoiceLineOut,
     InvoiceOut,
@@ -25,7 +25,7 @@ from app.services.billing import (
     list_invoice_lines,
     update_company,
 )
-from app.services.clients import UpstreamError, fetch_bookable_projects
+from app.services.clients import UpstreamError, fetch_bookable_projects, fetch_user_names, refuse_time_entry
 
 router = APIRouter(tags=["finance"])
 security = HTTPBearer(auto_error=False)
@@ -95,14 +95,65 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "service": settings.service_name}
 
 
-@router.get("/compensation", response_model=list[CompensationRow])
+@router.get("/compensation", response_model=list[CompensationEffectOut])
 async def get_compensation(
     principal: Principal = Depends(current_principal),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
     db: AsyncSession = Depends(get_db),
-) -> list[CompensationRow]:
+) -> list[CompensationEffectOut]:
     _require_manager(principal)
-    rows = await ledger.list_compensation(db, tenant_id=principal.tenant_id)
-    return [CompensationRow(**r) for r in rows]
+    if creds is None:
+        raise HTTPException(status_code=401, detail="not_authenticated")
+    names = await fetch_user_names(access_token=creds.credentials)
+    effects = await ledger.list_compensation_effects(db, tenant_id=principal.tenant_id)
+    invoiced_ids = await ledger.invoiced_time_entry_ids(db, tenant_id=principal.tenant_id)
+    out: list[CompensationEffectOut] = []
+    for row in effects:
+        out.append(
+            CompensationEffectOut(
+                time_entry_id=row.time_entry_id,
+                partner_id=row.partner_id,
+                partner_name=names.get(row.partner_id) or row.partner_id,
+                project_id=row.project_id,
+                classification=row.classification,
+                hours=float(row.hours),
+                rate_eur=float(row.rate_eur),
+                amount_eur=float(row.amount_eur),
+                can_undo=row.time_entry_id not in invoiced_ids,
+                updated_at=row.updated_at.isoformat() if row.updated_at else None,
+            )
+        )
+    return out
+
+
+@router.post("/compensation/{time_entry_id}/undo")
+async def undo_compensation(
+    time_entry_id: str,
+    principal: Principal = Depends(current_principal),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Undo a ledger effect by refusing the related time entry (reopens hours)."""
+    _require_manager(principal)
+    if creds is None:
+        raise HTTPException(status_code=401, detail="not_authenticated")
+    effect = await ledger.get_applied_effect(
+        db, tenant_id=principal.tenant_id, time_entry_id=time_entry_id
+    )
+    if effect is None:
+        raise HTTPException(status_code=404, detail="effect_not_found")
+    if await ledger.effect_is_invoiced(db, tenant_id=principal.tenant_id, time_entry_id=time_entry_id):
+        raise HTTPException(status_code=409, detail="already_invoiced")
+    try:
+        await refuse_time_entry(time_entry_id=time_entry_id, access_token=creds.credentials)
+    except UpstreamError as exc:
+        status_code = 409 if exc.detail == "not_refusable" else 503
+        if exc.detail == "time_entry_not_found":
+            status_code = 404
+        raise HTTPException(status_code=status_code, detail=exc.detail) from exc
+    # Reverse immediately; refuse event will also reverse (idempotent).
+    await ledger.reverse_time_effect(db, time_entry_id=time_entry_id)
+    return {"status": "undone", "time_entry_id": time_entry_id}
 
 
 @router.get("/reserve", response_model=ReserveSnapshot)
