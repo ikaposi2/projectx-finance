@@ -26,8 +26,10 @@ async def fetch_project(*, project_id: str, access_token: str) -> dict:
     return res.json()
 
 
-async def fetch_bookable_projects(*, access_token: str) -> list[dict]:
+async def fetch_bookable_projects(*, access_token: str, include_complete: bool = False) -> list[dict]:
     url = f"{settings.project_service_url.rstrip('/')}/projects/bookable"
+    if include_complete:
+        url = f"{url}?include_complete=true"
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:

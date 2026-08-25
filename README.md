@@ -59,13 +59,19 @@ uvicorn app.main:app --reload --port 8007
 
 | Kind | When |
 |------|------|
-| `fixed_milestone_50` | Fixed price &gt; threshold, progress ≥ 50%, no prior milestone invoice |
+| `fixed_milestone_50` | Fixed price **above** `MILESTONE_THRESHOLD_EUR`, progress ≥ 50%, no prior milestone |
 | `fixed_completion` | Progress `complete`, remaining fixed amount after prior invoices |
-| `tm_hours` | Unbilled approved billable hours × project staffing rates |
+| `tm_hours` | **Time & material only** (no fixed price) — unbilled approved hours × staffing rates |
 
-Invoices snapshot seller (company) and buyer (customer bill-to / MSP parent), VAT, and line items.
+Fixed-price projects (including those below the milestone threshold) are invoiced only via milestone and/or final completion — not as separate hour invoices.
 
-On **send** (`draft` → `issued`): sets `issued_at`, `due_date` (issue + payment terms), generates a PDF under `ARCHIVE_ROOT`, and **locks** linked time entries. **Returned** invoices unlock hours again. Only `issued` and `paid` invoices count toward billed amounts and hour locks.
+Completed projects (`progress=complete`) are excluded from hour booking (`GET /projects/bookable`); Finance still sees them via `include_complete=true` for the final invoice.
+
+Invoices snapshot seller (company) and buyer (customer bill-to / MSP parent), VAT, multiline buyer address, and line items.
+
+Each invoice gets a unique number at creation: `INV-{year}-{seq}` (e.g. `INV-2026-0001`), unique per tenant.
+
+On **send** (`draft` → `issued`): sets `issued_at`, `due_date` (issue + payment terms), generates a PDF under `ARCHIVE_ROOT`, and **locks** linked time entries. **Returned** invoices unlock hours again; delete returned or draft invoices via `DELETE`. Only `issued` and `paid` invoices count toward billed amounts and hour locks.
 
 ## Event handling
 

@@ -266,7 +266,7 @@ async def get_billing_candidates(
     if creds is None:
         raise HTTPException(status_code=401, detail="not_authenticated")
     try:
-        projects = await fetch_bookable_projects(access_token=creds.credentials)
+        projects = await fetch_bookable_projects(access_token=creds.credentials, include_complete=True)
         rows = await list_billing_candidates(
             db,
             tenant_id=principal.tenant_id,

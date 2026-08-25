@@ -213,23 +213,26 @@ async def resolve_actions_for_project(
             }
         )
 
-    unbilled = await unbilled_billable_effects(db, tenant_id=tenant_id, project_id=project_id)
-    hours = round(sum(float(e.hours) for e in unbilled), 2)
-    if hours > 0:
-        staffing = project.get("staffing") or []
-        avg_rate = 0.0
-        if staffing:
-            avg_rate = sum(float(s.get("rate_eur") or 0) for s in staffing) / len(staffing)
-        actions.append(
-            {
-                "kind": "tm_hours",
-                "label": "Consultancy hours invoice",
-                "amount_eur": round(hours * avg_rate, 2) if avg_rate > 0 else 0.0,
-                "hours": hours,
-                "rate_eur": round(avg_rate, 2),
-                "enabled": avg_rate > 0,
-            }
-        )
+    # Fixed-price work is invoiced via milestone/completion only — no separate T&M invoice.
+    # Pure T&M projects (no fixed price) bill approved hours.
+    if fixed <= 0.009:
+        unbilled = await unbilled_billable_effects(db, tenant_id=tenant_id, project_id=project_id)
+        hours = round(sum(float(e.hours) for e in unbilled), 2)
+        if hours > 0:
+            staffing = project.get("staffing") or []
+            avg_rate = 0.0
+            if staffing:
+                avg_rate = sum(float(s.get("rate_eur") or 0) for s in staffing) / len(staffing)
+            actions.append(
+                {
+                    "kind": "tm_hours",
+                    "label": "Consultancy hours invoice",
+                    "amount_eur": round(hours * avg_rate, 2) if avg_rate > 0 else 0.0,
+                    "hours": hours,
+                    "rate_eur": round(avg_rate, 2),
+                    "enabled": avg_rate > 0,
+                }
+            )
 
     return actions
 
