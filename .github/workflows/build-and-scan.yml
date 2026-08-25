@@ -1,0 +1,75 @@
+name: Build and scan (OKD Git BuildConfig)
+
+# Normal path: OKD BuildConfig GitHub webhook on push to main.
+# Manual backup only — requires repo secret OKD_KUBECONFIG.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      APP: finance
+      NAMESPACE: projectx
+    steps:
+      - name: Install oc
+        uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          oc: latest
+      - name: Login
+        run: |
+          mkdir -p "$HOME/.kube"
+          printf '%s' "${{ secrets.OKD_KUBECONFIG }}" > "$HOME/.kube/config"
+          oc whoami
+          oc project "$NAMESPACE"
+      - name: Start Git build
+        run: oc start-build "$APP" -n "$NAMESPACE" --follow --wait
+      - name: Trivy scan (CRITICAL)
+        run: |
+          set -euo pipefail
+          IMG="image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/${APP}:latest"
+          JOB="trivy-${APP}-${GITHUB_RUN_ID}"
+          oc -n "$NAMESPACE" delete job "$JOB" --ignore-not-found
+          cat <<EOF | oc apply -f -
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: $JOB
+            namespace: $NAMESPACE
+          spec:
+            ttlSecondsAfterFinished: 600
+            backoffLimit: 0
+            template:
+              spec:
+                restartPolicy: Never
+                serviceAccountName: builder
+                containers:
+                  - name: trivy
+                    image: docker.io/aquasec/trivy:0.58.1
+                    env:
+                      - name: TRIVY_CACHE_DIR
+                        value: /tmp/trivy
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - |
+                        set -eu
+                        export TRIVY_USERNAME=unused
+                        export TRIVY_PASSWORD=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                        trivy image --insecure --exit-code 1 --severity CRITICAL --ignore-unfixed "$IMG"
+                    volumeMounts:
+                      - name: cache
+                        mountPath: /tmp/trivy
+                volumes:
+                  - name: cache
+                    emptyDir: {}
+          EOF
+          for i in $(seq 1 36); do
+            SUCC=$(oc -n "$NAMESPACE" get job "$JOB" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
+            FAIL=$(oc -n "$NAMESPACE" get job "$JOB" -o jsonpath='{.status.failed}' 2>/dev/null || true)
+            if [[ "${SUCC:-0}" -ge 1 ]]; then oc -n "$NAMESPACE" logs "job/$JOB"; exit 0; fi
+            if [[ "${FAIL:-0}" -ge 1 ]]; then oc -n "$NAMESPACE" logs "job/$JOB" || true; exit 1; fi
+            sleep 5
+          done
+          echo "Trivy job timed out"; oc -n "$NAMESPACE" logs "job/$JOB" || true; exit 1
