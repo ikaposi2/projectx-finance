@@ -85,6 +85,8 @@ Reserve estimate ≈ issued+paid **net** invoice totals − chargeback euros (VA
 
 VAT on issued/paid invoices accumulates in a separate account by calendar quarter and is remitted every 3 months via `POST /vat/remit`.
 
+See also: [delivery lifecycle](../projectX-docs/docs/architecture/delivery-lifecycle.md) (fixed vs T&M flows).
+
 ## Out of scope (v1)
 
 - Bank account linking / automatic payment detection (deferred)
