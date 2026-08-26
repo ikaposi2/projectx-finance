@@ -205,18 +205,18 @@ async def generate_personnel_proposal(
     if resource is None:
         raise BillingError("resource_not_found")
 
-    company = await get_or_create_company(db, tenant_id)
-    company = (resource.get("company_name") or "").strip()
+    buyer = await get_or_create_company(db, tenant_id)
+    seller_company = (resource.get("company_name") or "").strip()
     person = (resource.get("display_name") or "").strip()
-    seller_name = company or person or "External consultant"
-    if company and person and company.lower() != person.lower():
-        seller_name = f"{company} ({person})"
+    seller_name = seller_company or person or "External consultant"
+    if seller_company and person and seller_company.lower() != person.lower():
+        seller_name = f"{seller_company} ({person})"
     seller_address = _seller_address(resource)
     seller_vat = (resource.get("vat_id") or None) and str(resource.get("vat_id"))
     seller_bank = (resource.get("bank_account") or None) and str(resource.get("bank_account"))
-    buyer_name = company.legal_name or settings.company_legal_name
-    buyer_address = _buyer_address(company)
-    buyer_vat = company.vat_id or settings.company_vat_id or None
+    buyer_name = buyer.legal_name or settings.company_legal_name
+    buyer_address = _buyer_address(buyer)
+    buyer_vat = buyer.vat_id or settings.company_vat_id or None
 
     hours = float(cand["hours"])
     rate = float(cand["rate_eur"])
@@ -252,7 +252,7 @@ async def generate_personnel_proposal(
         vat_rate=vat_rate,
         vat_eur=vat_eur,
         amount_eur=total,
-        payment_terms_days=int(company.payment_terms_days or 30),
+        payment_terms_days=int(buyer.payment_terms_days or 30),
         status="draft",
         notes=None,
     )

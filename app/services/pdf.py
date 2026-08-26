@@ -302,8 +302,33 @@ def generate_invoice_pdf(
     doc.build(story)
 
     rel = path.relative_to(Path(settings.archive_root))
-    return str(rel).replace("\\", "/")
+    relative = str(rel).replace("\\", "/")
+    try:
+        from app.services.object_store import upload_pdf
+
+        upload_pdf(path, relative)
+    except Exception:
+        # Local archive remains the source of truth if object store is down.
+        pass
+    return relative
 
 
 def resolve_pdf_absolute(relative_path: str) -> Path:
     return Path(settings.archive_root) / relative_path
+
+
+def load_pdf_bytes(relative_path: str) -> bytes | None:
+    """Prefer object store when configured, else local archive PVC."""
+    try:
+        from app.services.object_store import download_pdf_bytes, object_key_for_pdf, object_store_enabled
+
+        if object_store_enabled():
+            data = download_pdf_bytes(object_key_for_pdf(relative_path))
+            if data:
+                return data
+    except Exception:
+        pass
+    path = resolve_pdf_absolute(relative_path)
+    if path.is_file():
+        return path.read_bytes()
+    return None

@@ -1,7 +1,7 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,7 +47,6 @@ from app.services.clients import (
     refuse_time_entry,
 )
 from app.services.costs import CostError
-from app.services.pdf import resolve_pdf_absolute
 
 router = APIRouter(tags=["finance"])
 security = HTTPBearer(auto_error=False)
@@ -455,11 +454,17 @@ async def get_invoice_pdf(
     row = await ledger.get_invoice(db, tenant_id=principal.tenant_id, invoice_id=invoice_id)
     if row is None or not row.pdf_path:
         raise HTTPException(status_code=404, detail="not_found")
-    path = resolve_pdf_absolute(row.pdf_path)
-    if not path.is_file():
+    from app.services.pdf import load_pdf_bytes
+
+    data = load_pdf_bytes(row.pdf_path)
+    if not data:
         raise HTTPException(status_code=404, detail="pdf_missing")
     filename = f"{row.invoice_number or invoice_id}.pdf"
-    return FileResponse(path, media_type="application/pdf", filename=filename)
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 
 @router.patch("/invoices/{invoice_id}", response_model=InvoiceOut)

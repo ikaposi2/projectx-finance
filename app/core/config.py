@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     company_address: str = Field(default="", validation_alias="COMPANY_ADDRESS")
     company_invoice_email: str = Field(default="", validation_alias="COMPANY_INVOICE_EMAIL")
     archive_root: str = Field(default="/var/archive", validation_alias="ARCHIVE_ROOT")
+    s3_endpoint: str = Field(default="", validation_alias="S3_ENDPOINT")
+    s3_bucket: str = Field(default="", validation_alias="S3_BUCKET")
+    s3_access_key_id: str = Field(default="", validation_alias="S3_ACCESS_KEY_ID")
+    s3_secret_access_key: str = Field(default="", validation_alias="S3_SECRET_ACCESS_KEY")
+    s3_region: str = Field(default="eu01", validation_alias="S3_REGION")
+    s3_prefix: str = Field(default="finance/invoices", validation_alias="S3_PREFIX")
     otel_exporter_otlp_endpoint: str | None = None
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

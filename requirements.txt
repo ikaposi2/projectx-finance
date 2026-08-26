@@ -13,3 +13,5 @@ opentelemetry-exporter-otlp==1.29.0
 opentelemetry-instrumentation-fastapi==0.50b0
 opentelemetry-instrumentation-sqlalchemy==0.50b0
 reportlab==4.2.5
+boto3==1.35.76
+botocore==1.35.76
