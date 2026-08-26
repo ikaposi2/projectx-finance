@@ -15,6 +15,9 @@ from app.api.schemas import (
     InvoiceLineOut,
     InvoiceOut,
     InvoiceUpdate,
+    MonthlyCostCreate,
+    MonthlyCostOut,
+    MonthlyCostUpdate,
     ReserveSnapshot,
     VatAccountOut,
     VatRemitRequest,
@@ -22,6 +25,7 @@ from app.api.schemas import (
 from app.auth.jwt import Principal, decode_access_token
 from app.core.config import get_settings
 from app.db.session import get_db
+from app.services import costs as cost_service
 from app.services import ledger
 from app.services.billing import (
     BillingError,
@@ -32,6 +36,7 @@ from app.services.billing import (
     update_company,
 )
 from app.services.clients import UpstreamError, fetch_bookable_projects, fetch_user_names, refuse_time_entry
+from app.services.costs import CostError
 from app.services.pdf import resolve_pdf_absolute
 
 router = APIRouter(tags=["finance"])
@@ -377,3 +382,99 @@ async def delete_invoice(
         await ledger.delete_invoice(db, row)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _to_cost(row) -> MonthlyCostOut:
+    return MonthlyCostOut(
+        id=row.id,
+        label=row.label,
+        amount_eur=float(row.amount_eur or 0),
+        cadence=row.cadence,
+        start_month=row.start_month,
+        end_month=row.end_month,
+        notes=row.notes,
+        invoice_matched=bool(row.invoice_matched),
+        invoice_paid=bool(row.invoice_paid),
+    )
+
+
+@router.get("/costs", response_model=list[MonthlyCostOut])
+async def get_costs(
+    month: str = Query(..., min_length=7, max_length=7, description="YYYY-MM"),
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+) -> list[MonthlyCostOut]:
+    _require_manager(principal)
+    try:
+        rows = await cost_service.list_costs_for_month(
+            db, tenant_id=principal.tenant_id, month=month
+        )
+    except CostError as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
+    return [_to_cost(r) for r in rows]
+
+
+@router.post("/costs", response_model=MonthlyCostOut, status_code=status.HTTP_201_CREATED)
+async def post_cost(
+    body: MonthlyCostCreate,
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+) -> MonthlyCostOut:
+    _require_manager(principal)
+    try:
+        row = await cost_service.create_cost(
+            db,
+            tenant_id=principal.tenant_id,
+            label=body.label,
+            amount_eur=body.amount_eur,
+            cadence=body.cadence,
+            start_month=body.start_month,
+            end_month=body.end_month,
+            notes=body.notes,
+        )
+    except CostError as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
+    return _to_cost(row)
+
+
+@router.patch("/costs/{cost_id}", response_model=MonthlyCostOut)
+async def patch_cost(
+    cost_id: str,
+    body: MonthlyCostUpdate,
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+) -> MonthlyCostOut:
+    _require_manager(principal)
+    row = await cost_service.get_cost(db, tenant_id=principal.tenant_id, cost_id=cost_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    try:
+        row = await cost_service.update_cost(
+            db,
+            row,
+            label=body.label,
+            amount_eur=body.amount_eur,
+            cadence=body.cadence,
+            start_month=body.start_month,
+            end_month=body.end_month,
+            clear_end_month=body.clear_end_month,
+            notes=body.notes,
+            invoice_matched=body.invoice_matched,
+            invoice_paid=body.invoice_paid,
+        )
+    except CostError as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
+    return _to_cost(row)
+
+
+@router.delete("/costs/{cost_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_cost(
+    cost_id: str,
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    _require_manager(principal)
+    row = await cost_service.get_cost(db, tenant_id=principal.tenant_id, cost_id=cost_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    await cost_service.delete_cost(db, row)

@@ -167,3 +167,37 @@ class BillingCandidate(BaseModel):
     progress: str
     report_url: str | None = None
     actions: list[BillingAction]
+
+
+class MonthlyCostOut(BaseModel):
+    id: str
+    label: str
+    amount_eur: float
+    cadence: str
+    start_month: str
+    end_month: str | None = None
+    notes: str | None = None
+    invoice_matched: bool = False
+    invoice_paid: bool = False
+
+
+class MonthlyCostCreate(BaseModel):
+    label: str = Field(min_length=1, max_length=200)
+    amount_eur: float = Field(ge=0)
+    cadence: str = Field(default="one_off", pattern="^(one_off|recurring)$")
+    start_month: str = Field(min_length=7, max_length=7)
+    end_month: str | None = Field(default=None, max_length=7)
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class MonthlyCostUpdate(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=200)
+    amount_eur: float | None = Field(default=None, ge=0)
+    cadence: str | None = Field(default=None, pattern="^(one_off|recurring)$")
+    start_month: str | None = Field(default=None, min_length=7, max_length=7)
+    end_month: str | None = Field(default=None, max_length=7)
+    clear_end_month: bool = False
+    notes: str | None = Field(default=None, max_length=500)
+    invoice_matched: bool | None = None
+    invoice_paid: bool | None = None
+
