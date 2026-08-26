@@ -105,6 +105,7 @@ class InvoiceOut(BaseModel):
     project_name: str
     customer_id: str | None
     customer_name: str
+    partner_id: str | None = None
     buyer_vat_id: str | None = None
     buyer_address: str | None = None
     seller_name: str = ""
@@ -200,4 +201,25 @@ class MonthlyCostUpdate(BaseModel):
     notes: str | None = Field(default=None, max_length=500)
     invoice_matched: bool | None = None
     invoice_paid: bool | None = None
+
+
+class PersonnelCandidateOut(BaseModel):
+    partner_id: str
+    resource_id: str | None = None
+    display_name: str
+    month: str
+    hours: float
+    rate_eur: float
+    subtotal_eur: float
+    vat_rate: float
+    vat_eur: float
+    total_eur: float
+    already_generated: bool = False
+    invoice_id: str | None = None
+    invoice_number: str | None = None
+
+
+class PersonnelGenerate(BaseModel):
+    partner_id: str = Field(min_length=1, max_length=36)
+    month: str = Field(min_length=7, max_length=7, pattern=r"^\d{4}-\d{2}$")
 

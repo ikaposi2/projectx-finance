@@ -18,6 +18,8 @@ from app.api.schemas import (
     MonthlyCostCreate,
     MonthlyCostOut,
     MonthlyCostUpdate,
+    PersonnelCandidateOut,
+    PersonnelGenerate,
     ReserveSnapshot,
     VatAccountOut,
     VatRemitRequest,
@@ -27,6 +29,7 @@ from app.core.config import get_settings
 from app.db.session import get_db
 from app.services import costs as cost_service
 from app.services import ledger
+from app.services import personnel as personnel_service
 from app.services.billing import (
     BillingError,
     generate_invoice,
@@ -77,6 +80,7 @@ async def _to_invoice(db: AsyncSession, row) -> InvoiceOut:
         project_name=row.project_name or "",
         customer_id=row.customer_id,
         customer_name=row.customer_name,
+        partner_id=getattr(row, "partner_id", None),
         buyer_vat_id=getattr(row, "buyer_vat_id", None),
         buyer_address=getattr(row, "buyer_address", None),
         seller_name=getattr(row, "seller_name", "") or "",
@@ -295,8 +299,73 @@ async def get_invoices(
     db: AsyncSession = Depends(get_db),
 ) -> list[InvoiceOut]:
     _require_manager(principal)
-    rows = await ledger.list_invoices(db, tenant_id=principal.tenant_id)
+    rows = await ledger.list_invoices(db, tenant_id=principal.tenant_id, include_personnel=False)
     return [await _to_invoice(db, r) for r in rows]
+
+
+@router.get("/personnel-invoices/candidates", response_model=list[PersonnelCandidateOut])
+async def get_personnel_candidates(
+    month: str = Query(min_length=7, max_length=7, pattern=r"^\d{4}-\d{2}$"),
+    principal: Principal = Depends(current_principal),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> list[PersonnelCandidateOut]:
+    _require_manager(principal)
+    if creds is None:
+        raise HTTPException(status_code=401, detail="not_authenticated")
+    try:
+        rows = await personnel_service.personnel_candidates(
+            db,
+            tenant_id=principal.tenant_id,
+            access_token=creds.credentials,
+            month=month,
+        )
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
+    return [PersonnelCandidateOut(**r) for r in rows]
+
+
+@router.get("/personnel-invoices", response_model=list[InvoiceOut])
+async def get_personnel_invoices(
+    month: str | None = Query(default=None, min_length=7, max_length=7, pattern=r"^\d{4}-\d{2}$"),
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+) -> list[InvoiceOut]:
+    _require_manager(principal)
+    rows = await personnel_service.list_personnel_proposals(
+        db, tenant_id=principal.tenant_id, month=month
+    )
+    return [await _to_invoice(db, r) for r in rows]
+
+
+@router.post(
+    "/personnel-invoices/generate",
+    response_model=InvoiceOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_personnel_generate(
+    body: PersonnelGenerate,
+    principal: Principal = Depends(current_principal),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> InvoiceOut:
+    _require_manager(principal)
+    if creds is None:
+        raise HTTPException(status_code=401, detail="not_authenticated")
+    try:
+        row = await personnel_service.generate_personnel_proposal(
+            db,
+            tenant_id=principal.tenant_id,
+            access_token=creds.credentials,
+            partner_id=body.partner_id,
+            month=body.month,
+        )
+    except BillingError as exc:
+        code = 409 if exc.detail in {"proposal_already_exists", "no_hours_for_month"} else 422
+        raise HTTPException(status_code=code, detail=exc.detail) from exc
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
+    return await _to_invoice(db, row)
 
 
 @router.post("/invoices/generate", response_model=InvoiceOut, status_code=status.HTTP_201_CREATED)

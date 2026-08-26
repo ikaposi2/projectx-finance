@@ -30,6 +30,7 @@ _INVOICE_COLUMNS = (
     ("due_date", "TIMESTAMPTZ"),
     ("returned_at", "TIMESTAMPTZ"),
     ("pdf_path", "VARCHAR(500)"),
+    ("partner_id", "VARCHAR(36)"),
 )
 
 

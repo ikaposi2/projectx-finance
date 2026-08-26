@@ -129,7 +129,7 @@ async def list_compensation_effects(db: AsyncSession, *, tenant_id: str) -> list
 
 
 async def invoiced_time_entry_ids(db: AsyncSession, *, tenant_id: str) -> set[str]:
-    """Hours lock only after invoice is sent (issued) or paid."""
+    """Hours lock only after customer invoice is sent (issued) or paid."""
     rows = await db.scalars(
         select(InvoiceLine.time_entry_id)
         .join(Invoice, Invoice.id == InvoiceLine.invoice_id)
@@ -137,6 +137,7 @@ async def invoiced_time_entry_ids(db: AsyncSession, *, tenant_id: str) -> set[st
             InvoiceLine.tenant_id == tenant_id,
             InvoiceLine.time_entry_id.is_not(None),
             Invoice.status.in_(("issued", "paid")),
+            Invoice.kind != "personnel_proposal",
         )
     )
     return {str(x) for x in rows if x}
@@ -172,7 +173,12 @@ async def reserve_snapshot(db: AsyncSession, *, tenant_id: str) -> dict:
         elif row.classification == "billable":
             billable_hours += float(row.hours)
 
-    invoices = await db.scalars(select(Invoice).where(Invoice.tenant_id == tenant_id))
+    invoices = await db.scalars(
+        select(Invoice).where(
+            Invoice.tenant_id == tenant_id,
+            Invoice.kind != "personnel_proposal",
+        )
+    )
     issued_eur = 0.0
     paid_eur = 0.0
     draft_eur = 0.0
@@ -209,6 +215,7 @@ async def vat_account_snapshot(db: AsyncSession, *, tenant_id: str) -> dict:
         select(Invoice).where(
             Invoice.tenant_id == tenant_id,
             Invoice.status.in_(("issued", "paid")),
+            Invoice.kind != "personnel_proposal",
         )
     )
     collected_by_q: dict[tuple[int, int], float] = {}
@@ -287,10 +294,16 @@ async def record_vat_remittance(
     return row
 
 
-async def list_invoices(db: AsyncSession, *, tenant_id: str) -> list[Invoice]:
-    result = await db.scalars(
-        select(Invoice).where(Invoice.tenant_id == tenant_id).order_by(Invoice.created_at.desc())
-    )
+async def list_invoices(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    include_personnel: bool = False,
+) -> list[Invoice]:
+    stmt = select(Invoice).where(Invoice.tenant_id == tenant_id)
+    if not include_personnel:
+        stmt = stmt.where(Invoice.kind != "personnel_proposal")
+    result = await db.scalars(stmt.order_by(Invoice.created_at.desc()))
     return list(result)
 
 

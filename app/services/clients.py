@@ -90,6 +90,38 @@ async def refuse_time_entry(*, time_entry_id: str, access_token: str) -> None:
         raise UpstreamError("time_unavailable")
 
 
+async def fetch_resources(*, access_token: str) -> list[dict]:
+    url = f"{settings.partner_service_url.rstrip('/')}/resources"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            res = await client.get(url, headers=headers)
+    except httpx.HTTPError as exc:
+        raise UpstreamError("partner_unavailable") from exc
+    if res.status_code >= 400:
+        raise UpstreamError("partner_unavailable")
+    data = res.json()
+    return data if isinstance(data, list) else []
+
+
+async def fetch_time_entries(*, access_token: str, from_date: str, to_date: str) -> list[dict]:
+    url = f"{settings.time_service_url.rstrip('/')}/entries"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            res = await client.get(
+                url,
+                headers=headers,
+                params={"from": from_date, "to": to_date},
+            )
+    except httpx.HTTPError as exc:
+        raise UpstreamError("time_unavailable") from exc
+    if res.status_code >= 400:
+        raise UpstreamError("time_unavailable")
+    data = res.json()
+    return data if isinstance(data, list) else []
+
+
 async def advance_project_funnel(
     *,
     project_id: str,

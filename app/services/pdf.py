@@ -49,10 +49,21 @@ def _money(value: float) -> str:
     return f"€{float(value):,.2f}"
 
 
-def generate_invoice_pdf(invoice: Invoice, lines: list[InvoiceLine]) -> str:
+def generate_invoice_pdf(
+    invoice: Invoice,
+    lines: list[InvoiceLine],
+    *,
+    document_title: str | None = None,
+) -> str:
     """Write PDF to archive PVC; return relative path under ARCHIVE_ROOT."""
     path = _archive_path(invoice)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    is_proposal = (invoice.kind or "") == "personnel_proposal" or (
+        document_title or ""
+    ).upper().startswith("FACTUUR")
+    title = document_title or ("FACTUURVOORSTEL" if is_proposal else "INVOICE")
+    number_label = "Proposal no." if is_proposal else "Invoice no."
 
     doc = SimpleDocTemplate(
         str(path),
@@ -66,7 +77,7 @@ def generate_invoice_pdf(invoice: Invoice, lines: list[InvoiceLine]) -> str:
     title_style = ParagraphStyle(
         "InvoiceTitle",
         parent=styles["Title"],
-        fontSize=28,
+        fontSize=24 if is_proposal else 28,
         textColor=ACCENT,
         spaceAfter=2 * mm,
         fontName="Helvetica-Bold",
@@ -102,9 +113,9 @@ def generate_invoice_pdf(invoice: Invoice, lines: list[InvoiceLine]) -> str:
     story: list = []
 
     # Header band
-    header_left = Paragraph("<b>INVOICE</b>", title_style)
+    header_left = Paragraph(f"<b>{title}</b>", title_style)
     header_right = Paragraph(
-        f"<para align='right'><font size='11' color='#64748b'>Invoice no.</font><br/>"
+        f"<para align='right'><font size='11' color='#64748b'>{number_label}</font><br/>"
         f"<font size='16' color='#1e40af'><b>{invoice.invoice_number}</b></font></para>",
         right_style,
     )
@@ -121,20 +132,32 @@ def generate_invoice_pdf(invoice: Invoice, lines: list[InvoiceLine]) -> str:
     story.append(header)
     story.append(Spacer(1, 8 * mm))
 
+    if is_proposal:
+        story.append(
+            Paragraph(
+                "<b>Draft invoice proposal</b> — for review. Not a final tax invoice until confirmed.",
+                muted_style,
+            )
+        )
+        story.append(Spacer(1, 4 * mm))
+
     # Dates row
-    meta = Table(
-        [
-            [
-                Paragraph(f"<b>Issue date</b><br/>{_fmt_date(invoice.issued_at)}", body_style),
-                Paragraph(f"<b>Due date</b><br/>{_fmt_date(invoice.due_date)}", body_style),
-                Paragraph(
-                    f"<b>Payment terms</b><br/>{invoice.payment_terms_days} days",
-                    body_style,
-                ),
-            ]
-        ],
-        colWidths=[58 * mm, 58 * mm, 58 * mm],
-    )
+    period = invoice.period_label or "—"
+    meta_cells = [
+        Paragraph(
+            f"<b>{'Proposal date' if is_proposal else 'Issue date'}</b><br/>{_fmt_date(invoice.issued_at)}",
+            body_style,
+        ),
+        Paragraph(
+            f"<b>Period</b><br/>{period}" if is_proposal else f"<b>Due date</b><br/>{_fmt_date(invoice.due_date)}",
+            body_style,
+        ),
+        Paragraph(
+            f"<b>Payment terms</b><br/>{invoice.payment_terms_days} days",
+            body_style,
+        ),
+    ]
+    meta = Table([meta_cells], colWidths=[58 * mm, 58 * mm, 58 * mm])
     meta.setStyle(
         TableStyle(
             [
@@ -198,7 +221,7 @@ def generate_invoice_pdf(invoice: Invoice, lines: list[InvoiceLine]) -> str:
             Paragraph("<b>Description</b>", body_style),
             Paragraph("<b>Qty</b>", right_style),
             Paragraph("<b>Unit</b>", right_style),
-            Paragraph("<b>Price</b>", right_style),
+            Paragraph("<b>Rate</b>" if is_proposal else "<b>Price</b>", right_style),
             Paragraph("<b>Amount</b>", right_style),
         ]
     ]
@@ -216,9 +239,10 @@ def generate_invoice_pdf(invoice: Invoice, lines: list[InvoiceLine]) -> str:
 
     line_count = len(lines)
     totals_start = line_count + 1
+    total_label = "Total (incl. VAT)" if is_proposal else "Total due"
     table_data.extend(
         [
-            ["", "", "", Paragraph("<b>Subtotal</b>", right_style), Paragraph(_money(invoice.subtotal_eur), right_style)],
+            ["", "", "", Paragraph("<b>Amount (ex VAT)</b>" if is_proposal else "<b>Subtotal</b>", right_style), Paragraph(_money(invoice.subtotal_eur), right_style)],
             [
                 "",
                 "",
@@ -230,7 +254,7 @@ def generate_invoice_pdf(invoice: Invoice, lines: list[InvoiceLine]) -> str:
                 "",
                 "",
                 "",
-                Paragraph("<b>Total due</b>", right_style),
+                Paragraph(f"<b>{total_label}</b>", right_style),
                 Paragraph(f"<b>{_money(invoice.amount_eur)}</b>", right_style),
             ],
         ]
@@ -260,12 +284,19 @@ def generate_invoice_pdf(invoice: Invoice, lines: list[InvoiceLine]) -> str:
     story.append(tbl)
     story.append(Spacer(1, 12 * mm))
 
-    footer = (
-        f"Please transfer <b>{_money(invoice.amount_eur)}</b> before <b>{_fmt_date(invoice.due_date)}</b>"
-    )
-    if invoice.seller_bank_account:
-        footer += f" to IBAN <b>{invoice.seller_bank_account}</b>"
-    footer += f", referencing invoice <b>{invoice.invoice_number}</b>."
+    if is_proposal:
+        footer = (
+            f"This factuurvoorstel totals <b>{_money(invoice.amount_eur)}</b> "
+            f"(amount €{_money(invoice.subtotal_eur).lstrip('€')} + VAT €{_money(invoice.vat_eur).lstrip('€')}). "
+            f"Reference <b>{invoice.invoice_number}</b>."
+        )
+    else:
+        footer = (
+            f"Please transfer <b>{_money(invoice.amount_eur)}</b> before <b>{_fmt_date(invoice.due_date)}</b>"
+        )
+        if invoice.seller_bank_account:
+            footer += f" to IBAN <b>{invoice.seller_bank_account}</b>"
+        footer += f", referencing invoice <b>{invoice.invoice_number}</b>."
     story.append(Paragraph(footer, muted_style))
 
     doc.build(story)

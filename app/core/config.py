@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     customer_service_url: str = Field(default="http://customer:8000", validation_alias="CUSTOMER_SERVICE_URL")
     identity_service_url: str = Field(default="http://identity:8000", validation_alias="IDENTITY_SERVICE_URL")
     time_service_url: str = Field(default="http://time:8000", validation_alias="TIME_SERVICE_URL")
+    partner_service_url: str = Field(default="http://partner:8000", validation_alias="PARTNER_SERVICE_URL")
     company_legal_name: str = Field(default="Platform BV", validation_alias="COMPANY_LEGAL_NAME")
     company_vat_id: str = Field(default="", validation_alias="COMPANY_VAT_ID")
     company_coc_number: str = Field(default="", validation_alias="COMPANY_COC_NUMBER")
