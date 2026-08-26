@@ -42,6 +42,7 @@ from app.services.clients import (
     UpstreamError,
     advance_project_funnel,
     fetch_bookable_projects,
+    fetch_project,
     fetch_user_names,
     refuse_time_entry,
 )
@@ -52,6 +53,7 @@ router = APIRouter(tags=["finance"])
 security = HTTPBearer(auto_error=False)
 settings = get_settings()
 MANAGER_ROLES = {"partner", "manager", "admin"}
+SETTLED_FUNNEL = frozenset({"closed", "paid"})
 
 
 async def current_principal(
@@ -63,6 +65,32 @@ async def current_principal(
         return decode_access_token(creds.credentials)
     except ValueError:
         raise HTTPException(status_code=401, detail="invalid_token") from None
+
+
+async def _closed_project_ids(*, access_token: str, project_ids: set[str]) -> set[str]:
+    """Project ids whose funnel is settled (closed/paid) — compensation undo blocked."""
+    closed: set[str] = set()
+    for pid in project_ids:
+        if not pid:
+            continue
+        try:
+            project = await fetch_project(project_id=pid, access_token=access_token)
+        except UpstreamError:
+            continue
+        status = str(project.get("funnel_status") or "").strip()
+        if status == "finalizing":
+            status = "delivered"
+        if status in SETTLED_FUNNEL:
+            closed.add(pid)
+    return closed
+
+
+async def _project_is_closed(*, access_token: str, project_id: str | None) -> bool:
+    if not project_id:
+        return False
+    return project_id in await _closed_project_ids(
+        access_token=access_token, project_ids={project_id}
+    )
 
 
 def _require_manager(principal: Principal) -> None:
@@ -133,8 +161,15 @@ async def get_compensation(
     names = await fetch_user_names(access_token=creds.credentials)
     effects = await ledger.list_compensation_effects(db, tenant_id=principal.tenant_id)
     invoiced_ids = await ledger.invoiced_time_entry_ids(db, tenant_id=principal.tenant_id)
+    project_ids = {str(row.project_id) for row in effects if row.project_id}
+    closed_ids = await _closed_project_ids(access_token=creds.credentials, project_ids=project_ids)
     out: list[CompensationEffectOut] = []
     for row in effects:
+        blocked: str | None = None
+        if row.time_entry_id in invoiced_ids:
+            blocked = "already_invoiced"
+        elif row.project_id and str(row.project_id) in closed_ids:
+            blocked = "project_closed"
         out.append(
             CompensationEffectOut(
                 time_entry_id=row.time_entry_id,
@@ -145,7 +180,8 @@ async def get_compensation(
                 hours=float(row.hours),
                 rate_eur=float(row.rate_eur),
                 amount_eur=float(row.amount_eur),
-                can_undo=row.time_entry_id not in invoiced_ids,
+                can_undo=blocked is None,
+                undo_blocked_reason=blocked,
                 updated_at=row.updated_at.isoformat() if row.updated_at else None,
             )
         )
@@ -170,6 +206,8 @@ async def undo_compensation(
         raise HTTPException(status_code=404, detail="effect_not_found")
     if await ledger.effect_is_invoiced(db, tenant_id=principal.tenant_id, time_entry_id=time_entry_id):
         raise HTTPException(status_code=409, detail="already_invoiced")
+    if await _project_is_closed(access_token=creds.credentials, project_id=effect.project_id):
+        raise HTTPException(status_code=409, detail="project_closed")
     try:
         await refuse_time_entry(time_entry_id=time_entry_id, access_token=creds.credentials)
     except UpstreamError as exc:
