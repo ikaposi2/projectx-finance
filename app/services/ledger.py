@@ -45,12 +45,16 @@ async def apply_time_approval(
     project_id: str | None,
     hours: float,
     classification: str,
+    rate_eur: float | None = None,
 ) -> bool:
     existing = await db.get(CompensationEffect, time_entry_id)
     if existing is not None and existing.applied:
         return False
 
-    rate = float(settings.internal_rate_eur) if classification == "approved_non_billable" else 0.0
+    if rate_eur is not None:
+        rate = float(rate_eur)
+    else:
+        rate = float(settings.internal_rate_eur) if classification == "approved_non_billable" else 0.0
     amount = round(float(hours) * rate, 2)
 
     if existing is None:

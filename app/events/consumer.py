@@ -44,6 +44,8 @@ async def handle_envelope(envelope: dict[str, Any]) -> None:
                 return
             project_raw = data.get("project_id")
             project_id = str(project_raw) if project_raw else None
+            rate_raw = data.get("rate_eur")
+            rate_eur = float(rate_raw) if rate_raw is not None else None
             applied = await apply_time_approval(
                 db,
                 tenant_id=tenant_id,
@@ -52,6 +54,7 @@ async def handle_envelope(envelope: dict[str, Any]) -> None:
                 project_id=project_id,
                 hours=float(hours),
                 classification=classification,
+                rate_eur=rate_eur,
             )
             if applied:
                 logger.info(
