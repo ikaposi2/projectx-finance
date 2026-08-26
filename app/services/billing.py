@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import calendar
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -7,15 +9,41 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.db.models import CompanyProfile, CompensationEffect, Invoice, InvoiceLine
-from app.services.clients import UpstreamError, fetch_customer, fetch_project
+from app.services.clients import UpstreamError, fetch_customer, fetch_project, fetch_time_entries
 
 settings = get_settings()
+
+_PERIOD_RE = re.compile(r"^\d{4}-\d{2}$")
+# T&M invoices while delivery is open; delivered kept for late unbilled hours.
+_TM_FUNNEL = frozenset({"in_delivery", "delivered"})
 
 
 class BillingError(Exception):
     def __init__(self, detail: str):
         self.detail = detail
         super().__init__(detail)
+
+
+def parse_period_month(value: str | None) -> str:
+    """Validate YYYY-MM billing period."""
+    if not value or not _PERIOD_RE.match(value.strip()):
+        raise BillingError("invalid_month")
+    month = value.strip()
+    year_s, mon_s = month.split("-", 1)
+    year, mon = int(year_s), int(mon_s)
+    if mon < 1 or mon > 12:
+        raise BillingError("invalid_month")
+    # Reject impossible calendar months via monthrange
+    calendar.monthrange(year, mon)
+    return month
+
+
+def month_bounds(month: str) -> tuple[str, str]:
+    """Return (from_iso, to_iso) inclusive for YYYY-MM."""
+    year = int(month[:4])
+    mon = int(month[5:7])
+    last = calendar.monthrange(year, mon)[1]
+    return f"{month}-01", f"{month}-{last:02d}"
 
 
 def _format_address(parts: list[str | None]) -> str | None:
@@ -87,7 +115,7 @@ async def billed_amount_for_project(db: AsyncSession, *, tenant_id: str, project
         select(Invoice).where(
             Invoice.tenant_id == tenant_id,
             Invoice.project_id == project_id,
-            Invoice.status.in_(("issued", "paid")),
+            Invoice.status.in_(("draft", "issued", "paid")),
             Invoice.kind.in_(("fixed_completion", "fixed_milestone_50")),
         )
     )
@@ -100,19 +128,20 @@ async def has_milestone_invoice(db: AsyncSession, *, tenant_id: str, project_id:
             Invoice.tenant_id == tenant_id,
             Invoice.project_id == project_id,
             Invoice.kind == "fixed_milestone_50",
-            Invoice.status.in_(("issued", "paid")),
+            Invoice.status.in_(("draft", "issued", "paid")),
         ).limit(1)
     )
     return row is not None
 
 
 async def billed_time_entry_ids(db: AsyncSession, *, tenant_id: str, project_id: str) -> set[str]:
+    """Entry ids already on a T&M draft/issued/paid invoice (avoid double-billing)."""
     inv_ids = await db.scalars(
         select(Invoice.id).where(
             Invoice.tenant_id == tenant_id,
             Invoice.project_id == project_id,
             Invoice.kind == "tm_hours",
-            Invoice.status.in_(("issued", "paid")),
+            Invoice.status.in_(("draft", "issued", "paid")),
         )
     )
     ids = list(inv_ids)
@@ -141,6 +170,74 @@ async def unbilled_billable_effects(
         )
     )
     return [r for r in rows if r.time_entry_id not in billed]
+
+
+async def unbilled_billable_for_month(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    project_id: str,
+    period_label: str,
+    access_token: str,
+) -> list[dict]:
+    """
+    Unbilled approved billable hours for a project in YYYY-MM (by work_date).
+
+    Prefers compensation ledger rates when present; otherwise uses hours from time service.
+    """
+    period = parse_period_month(period_label)
+    from_day, to_day = month_bounds(period)
+    entries = await fetch_time_entries(access_token=access_token, from_date=from_day, to_date=to_day)
+    billed = await billed_time_entry_ids(db, tenant_id=tenant_id, project_id=project_id)
+
+    month_ids: set[str] = set()
+    entry_by_id: dict[str, dict] = {}
+    for e in entries:
+        eid = str(e.get("id") or "")
+        if not eid:
+            continue
+        if str(e.get("project_id") or "") != project_id:
+            continue
+        if e.get("status") != "approved":
+            continue
+        if e.get("classification") != "billable":
+            continue
+        if float(e.get("hours") or 0) <= 0:
+            continue
+        if eid in billed:
+            continue
+        month_ids.add(eid)
+        entry_by_id[eid] = e
+
+    if not month_ids:
+        return []
+
+    effects = await db.scalars(
+        select(CompensationEffect).where(
+            CompensationEffect.tenant_id == tenant_id,
+            CompensationEffect.project_id == project_id,
+            CompensationEffect.classification == "billable",
+            CompensationEffect.applied.is_(True),
+            CompensationEffect.time_entry_id.in_(list(month_ids)),
+        )
+    )
+    effect_by_id = {r.time_entry_id: r for r in effects}
+
+    out: list[dict] = []
+    for eid in sorted(month_ids):
+        entry = entry_by_id[eid]
+        effect = effect_by_id.get(eid)
+        out.append(
+            {
+                "time_entry_id": eid,
+                "partner_id": str(
+                    (effect.partner_id if effect else None) or entry.get("partner_id") or ""
+                ),
+                "hours": float(effect.hours if effect else entry.get("hours") or 0),
+                "rate_eur": float(effect.rate_eur) if effect and float(effect.rate_eur or 0) > 0 else None,
+            }
+        )
+    return [row for row in out if row["hours"] > 0 and row["partner_id"]]
 
 
 def _buyer_from_customer(customer: dict | None, fallback_name: str) -> tuple[str, str | None, str | None, str | None, int]:
@@ -177,7 +274,12 @@ def _buyer_from_customer(customer: dict | None, fallback_name: str) -> tuple[str
 
 
 async def resolve_actions_for_project(
-    db: AsyncSession, *, tenant_id: str, project: dict
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    project: dict,
+    access_token: str | None = None,
+    period_label: str | None = None,
 ) -> list[dict]:
     project_id = str(project.get("id") or "")
     fixed = float(project.get("fixed_price_eur") or 0)
@@ -188,8 +290,27 @@ async def resolve_actions_for_project(
 
     already = await billed_amount_for_project(db, tenant_id=tenant_id, project_id=project_id)
     remaining_fixed = round(max(0.0, fixed - already), 2)
+    threshold = float(settings.milestone_threshold_eur)
 
-    # Finance leads once the project is delivered (progress milestones removed).
+    # 50% milestone for large fixed-price jobs (once, during delivery or when delivered).
+    if (
+        fixed > threshold
+        and remaining_fixed > 0.009
+        and funnel in ("in_delivery", "delivered")
+        and not await has_milestone_invoice(db, tenant_id=tenant_id, project_id=project_id)
+    ):
+        milestone_amount = round(min(remaining_fixed, fixed * 0.5), 2)
+        if milestone_amount > 0.009:
+            actions.append(
+                {
+                    "kind": "fixed_milestone_50",
+                    "label": "50% milestone invoice",
+                    "amount_eur": milestone_amount,
+                    "enabled": True,
+                }
+            )
+
+    # Final fixed invoice once delivered (remainder after any milestone).
     if funnel == "delivered" and fixed > 0.009 and remaining_fixed > 0.009:
         actions.append(
             {
@@ -200,23 +321,40 @@ async def resolve_actions_for_project(
             }
         )
 
-    # Pure T&M projects (no fixed price) bill approved hours once delivered.
-    if fixed <= 0.009 and funnel == "delivered":
-        unbilled = await unbilled_billable_effects(db, tenant_id=tenant_id, project_id=project_id)
-        hours = round(sum(float(e.hours) for e in unbilled), 2)
+    # Pure T&M: monthly invoices while in delivery (and delivered for late hours).
+    if fixed <= 0.009 and funnel in _TM_FUNNEL and access_token and period_label:
+        period = parse_period_month(period_label)
+        unbilled = await unbilled_billable_for_month(
+            db,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            period_label=period,
+            access_token=access_token,
+        )
+        hours = round(sum(float(e["hours"]) for e in unbilled), 2)
         if hours > 0:
             staffing = project.get("staffing") or []
+            rate_by_partner = {
+                str(s.get("partner_id")): float(s.get("rate_eur") or 0) for s in staffing
+            }
             avg_rate = 0.0
             if staffing:
                 avg_rate = sum(float(s.get("rate_eur") or 0) for s in staffing) / len(staffing)
+            amount = 0.0
+            for row in unbilled:
+                rate = float(row.get("rate_eur") or 0) or rate_by_partner.get(row["partner_id"]) or avg_rate
+                amount += float(row["hours"]) * rate
+            amount = round(amount, 2)
+            enabled_rate = amount > 0 or avg_rate > 0
             actions.append(
                 {
                     "kind": "tm_hours",
-                    "label": "Consultancy hours invoice",
-                    "amount_eur": round(hours * avg_rate, 2) if avg_rate > 0 else 0.0,
+                    "label": f"Consultancy hours — {period}",
+                    "amount_eur": amount,
                     "hours": hours,
                     "rate_eur": round(avg_rate, 2),
-                    "enabled": avg_rate > 0,
+                    "period_label": period,
+                    "enabled": enabled_rate and amount > 0,
                 }
             )
 
@@ -229,7 +367,9 @@ async def list_billing_candidates(
     tenant_id: str,
     access_token: str,
     projects: list[dict],
+    period_label: str | None = None,
 ) -> list[dict]:
+    period = parse_period_month(period_label) if period_label else datetime.now(timezone.utc).strftime("%Y-%m")
     out: list[dict] = []
     for brief in projects:
         pid = str(brief.get("id") or "")
@@ -239,7 +379,13 @@ async def list_billing_candidates(
             detail = await fetch_project(project_id=pid, access_token=access_token)
         except UpstreamError:
             continue
-        actions = await resolve_actions_for_project(db, tenant_id=tenant_id, project=detail)
+        actions = await resolve_actions_for_project(
+            db,
+            tenant_id=tenant_id,
+            project=detail,
+            access_token=access_token,
+            period_label=period,
+        )
         if not actions:
             continue
         out.append(
@@ -251,6 +397,7 @@ async def list_billing_candidates(
                 "fixed_price_eur": float(detail.get("fixed_price_eur") or 0),
                 "progress": detail.get("funnel_status") or detail.get("progress") or "none",
                 "report_url": detail.get("report_url"),
+                "period_label": period,
                 "actions": actions,
             }
         )
@@ -268,7 +415,20 @@ async def generate_invoice(
     period_label: str | None = None,
 ) -> Invoice:
     project = await fetch_project(project_id=project_id, access_token=access_token)
-    actions = await resolve_actions_for_project(db, tenant_id=tenant_id, project=project)
+
+    period: str | None = None
+    if kind == "tm_hours":
+        period = parse_period_month(
+            period_label or datetime.now(timezone.utc).strftime("%Y-%m")
+        )
+
+    actions = await resolve_actions_for_project(
+        db,
+        tenant_id=tenant_id,
+        project=project,
+        access_token=access_token,
+        period_label=period,
+    )
     action = next((a for a in actions if a["kind"] == kind and a.get("enabled")), None)
     if action is None:
         raise BillingError("billing_not_available")
@@ -330,16 +490,22 @@ async def generate_invoice(
             }
         )
     elif kind == "tm_hours":
-        unbilled = await unbilled_billable_effects(db, tenant_id=tenant_id, project_id=project_id)
+        assert period is not None
+        unbilled = await unbilled_billable_for_month(
+            db,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            period_label=period,
+            access_token=access_token,
+        )
         staffing = project.get("staffing") or []
         rate_by_partner = {str(s.get("partner_id")): float(s.get("rate_eur") or 0) for s in staffing}
         avg_rate = float(action.get("rate_eur") or 0)
-        period = period_label or datetime.now(timezone.utc).strftime("%Y-%m")
         for effect in unbilled:
-            rate = rate_by_partner.get(effect.partner_id) or avg_rate
+            rate = float(effect.get("rate_eur") or 0) or rate_by_partner.get(effect["partner_id"]) or avg_rate
             if rate <= 0:
                 continue
-            hrs = float(effect.hours)
+            hrs = float(effect["hours"])
             lines.append(
                 {
                     "description": description
@@ -349,11 +515,11 @@ async def generate_invoice(
                     "unit_price_eur": rate,
                     "amount_eur": round(hrs * rate, 2),
                     "source": "approved_hours",
-                    "time_entry_id": effect.time_entry_id,
+                    "time_entry_id": effect["time_entry_id"],
                 }
             )
         if not lines:
-            raise BillingError("no_billable_hours")
+            raise BillingError("no_hours_for_month")
     else:
         raise BillingError("invalid_kind")
 
@@ -377,7 +543,7 @@ async def generate_invoice(
         seller_address=seller_address,
         seller_bank_account=company.bank_account,
         description=description,
-        period_label=period_label,
+        period_label=period if kind == "tm_hours" else period_label,
         subtotal_eur=subtotal,
         vat_rate=vat_rate,
         vat_eur=vat_eur,

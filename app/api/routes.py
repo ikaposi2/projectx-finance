@@ -20,6 +20,7 @@ from app.api.schemas import (
     MonthlyCostUpdate,
     PersonnelCandidateOut,
     PersonnelGenerate,
+    ReportSummaryOut,
     ReserveSnapshot,
     VatAccountOut,
     VatRemitRequest,
@@ -38,6 +39,7 @@ from app.services.billing import (
     list_invoice_lines,
     update_company,
 )
+from app.services import reports as reports_service
 from app.services.clients import (
     UpstreamError,
     advance_project_funnel,
@@ -308,8 +310,42 @@ async def patch_company(
     )
 
 
+@router.get("/reports/summary", response_model=ReportSummaryOut)
+async def get_report_summary(
+    from_date: date = Query(..., alias="from", description="Period start (inclusive)"),
+    to_date: date = Query(..., alias="to", description="Period end (inclusive)"),
+    principal: Principal = Depends(current_principal),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> ReportSummaryOut:
+    """Five management figures: funnel, in-progress WIP, utilization, delivered, received."""
+    _require_manager(principal)
+    if creds is None:
+        raise HTTPException(status_code=401, detail="not_authenticated")
+    try:
+        snap = await reports_service.report_summary(
+            db,
+            tenant_id=principal.tenant_id,
+            access_token=creds.credentials,
+            from_day=from_date,
+            to_day=to_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc) or "invalid_range") from exc
+    except UpstreamError as exc:
+        raise HTTPException(status_code=503, detail=exc.detail) from exc
+    return ReportSummaryOut(**snap)
+
+
 @router.get("/billing/candidates", response_model=list[BillingCandidate])
 async def get_billing_candidates(
+    month: str | None = Query(
+        default=None,
+        min_length=7,
+        max_length=7,
+        pattern=r"^\d{4}-\d{2}$",
+        description="Billing month YYYY-MM for T&M hour candidates (default: current UTC month)",
+    ),
     principal: Principal = Depends(current_principal),
     creds: HTTPAuthorizationCredentials | None = Depends(security),
     db: AsyncSession = Depends(get_db),
@@ -324,7 +360,10 @@ async def get_billing_candidates(
             tenant_id=principal.tenant_id,
             access_token=creds.credentials,
             projects=projects,
+            period_label=month,
         )
+    except BillingError as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
     except UpstreamError as exc:
         raise HTTPException(status_code=503, detail=exc.detail) from exc
     return [BillingCandidate(**r) for r in rows]
@@ -426,7 +465,8 @@ async def post_generate_invoice(
             period_label=body.period_label,
         )
     except BillingError as exc:
-        raise HTTPException(status_code=409, detail=exc.detail) from exc
+        code = 422 if exc.detail in {"invalid_month", "no_hours_for_month", "no_billable_hours"} else 409
+        raise HTTPException(status_code=code, detail=exc.detail) from exc
     except UpstreamError as exc:
         code = 404 if "not_found" in exc.detail else 503
         raise HTTPException(status_code=code, detail=exc.detail) from exc

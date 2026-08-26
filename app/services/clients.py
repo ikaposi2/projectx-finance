@@ -26,6 +26,20 @@ async def fetch_project(*, project_id: str, access_token: str) -> dict:
     return res.json()
 
 
+async def fetch_funnel_summary(*, access_token: str) -> list[dict]:
+    url = f"{settings.project_service_url.rstrip('/')}/projects/funnel"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            res = await client.get(url, headers=headers)
+    except httpx.HTTPError as exc:
+        raise UpstreamError("project_unavailable") from exc
+    if res.status_code >= 400:
+        raise UpstreamError("project_unavailable")
+    data = res.json()
+    return data if isinstance(data, list) else []
+
+
 async def fetch_bookable_projects(*, access_token: str, include_complete: bool = False) -> list[dict]:
     url = f"{settings.project_service_url.rstrip('/')}/projects/bookable"
     if include_complete:

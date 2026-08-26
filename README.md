@@ -5,7 +5,7 @@ Finance microservice: **customer billing** (invoices), plus internal partner cha
 - **Auth:** JWT issued by `projectX-identity` (shared `JWT_SECRET`)
 - **DB:** logical database `finance` on in-cluster Postgres
 - **Events:** durable consumer on `projectx.events.time.>` (`PROJECTX_EVENTS`)
-- **Upstream:** project + customer services for invoice generation
+- **Upstream:** project, customer, time, partner (billing, reporting, personnel)
 
 ## Local run
 
@@ -30,7 +30,8 @@ uvicorn app.main:app --reload --port 8007
 | `PROJECT_SERVICE_URL` | | Fetch project progress / staffing |
 | `CUSTOMER_SERVICE_URL` | | Buyer / bill-to details |
 | `IDENTITY_SERVICE_URL` | | Resolve partner display names |
-| `TIME_SERVICE_URL` | | Undo compensation via refuse |
+| `TIME_SERVICE_URL` | | Time entries (T&M month filter, reporting, refuse undo) |
+| `PARTNER_SERVICE_URL` | | Resources (personnel proposals, reporting capacity) |
 | `COMPANY_*` | | Seller defaults for company profile bootstrap |
 | `ARCHIVE_ROOT` | `/var/archive` | Invoice PDF archive (PVC in cluster) |
 | `CORS_ORIGINS` | localhost Vite | Browser origins |
@@ -42,8 +43,9 @@ uvicorn app.main:app --reload --port 8007
 | GET | `/health` | no | Liveness |
 | GET | `/company` | manager+ | Seller profile (auto-created) |
 | PATCH | `/company` | manager+ | Update seller details |
-| GET | `/billing/candidates` | manager+ | Projects ready to invoice + actions |
-| POST | `/invoices/generate` | manager+ | Create draft from project + kind |
+| GET | `/billing/candidates?month=YYYY-MM` | manager+ | Projects ready to invoice + actions (T&M scoped to month; default current UTC month) |
+| GET | `/reports/summary?from=&to=` | manager+ | Five management figures (funnel, WIP, utilization, delivered, received) |
+| POST | `/invoices/generate` | manager+ | Create draft from project + kind (`period_label` required for `tm_hours`) |
 | GET | `/invoices` | manager+ | List invoices (with lines) |
 | PATCH | `/invoices/{id}` | manager+ | `draft` → `issued` (send) → `paid` \| `returned`; `paid` → `issued` |
 | DELETE | `/invoices/{id}` | manager+ | Remove `draft` or `returned` invoice (unlocks hours) |
@@ -63,11 +65,11 @@ uvicorn app.main:app --reload --port 8007
 
 | Kind | When |
 |------|------|
-| `fixed_milestone_50` | Fixed price **above** `MILESTONE_THRESHOLD_EUR`, progress ≥ 50%, no prior milestone |
-| `fixed_completion` | Progress `complete`, remaining fixed amount after prior invoices |
-| `tm_hours` | **Time & material only** (no fixed price) — unbilled approved hours × staffing rates |
+| `fixed_milestone_50` | Fixed price **above** `MILESTONE_THRESHOLD_EUR`, funnel `in_delivery` or `delivered`, no prior milestone draft/issued/paid — amount = 50% of assignment (capped by remaining) |
+| `fixed_completion` | Funnel `delivered`, remaining fixed amount after prior invoices |
+| `tm_hours` | **Time & material only** (no fixed price) — unbilled approved hours in `period_label` (YYYY-MM) × staffing rates; available while funnel is `in_delivery` or `delivered` |
 
-Fixed-price projects (including those below the milestone threshold) are invoiced only via milestone and/or final completion — not as separate hour invoices.
+Fixed-price projects below the milestone threshold are invoiced only via final completion — not as separate hour invoices. Above threshold: optional 50% milestone, then final for the remainder.
 
 Completed projects (`progress=complete`) are excluded from hour booking (`GET /projects/bookable`); Finance still sees them via `include_complete=true` for the final invoice.
 
@@ -96,4 +98,3 @@ See also: [delivery lifecycle](../projectX-docs/docs/architecture/delivery-lifec
 - Bank account linking / automatic payment detection (deferred)
 - Email delivery of invoices
 - Year-end 50/50 bonus workflow
-- Month-scoped T&M batching UI

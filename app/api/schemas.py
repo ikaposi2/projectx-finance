@@ -148,7 +148,8 @@ class InvoiceGenerate(BaseModel):
     project_id: str = Field(min_length=1, max_length=36)
     kind: str = Field(pattern="^(fixed_completion|fixed_milestone_50|tm_hours)$")
     description: str | None = Field(default=None, max_length=1000)
-    period_label: str | None = Field(default=None, max_length=80)
+    # Required for tm_hours (YYYY-MM). Ignored for fixed invoice kinds.
+    period_label: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
 
 
 class BillingAction(BaseModel):
@@ -158,6 +159,7 @@ class BillingAction(BaseModel):
     enabled: bool
     hours: float | None = None
     rate_eur: float | None = None
+    period_label: str | None = None
 
 
 class BillingCandidate(BaseModel):
@@ -168,6 +170,7 @@ class BillingCandidate(BaseModel):
     fixed_price_eur: float
     progress: str
     report_url: str | None = None
+    period_label: str | None = None
     actions: list[BillingAction]
 
 
@@ -202,6 +205,43 @@ class MonthlyCostUpdate(BaseModel):
     notes: str | None = Field(default=None, max_length=500)
     invoice_matched: bool | None = None
     invoice_paid: bool | None = None
+
+
+class ReportFunnelBucket(BaseModel):
+    funnel_status: str
+    count: int
+    value_eur: float
+    remaining_hours: float = 0
+    contracted_hours: float = 0
+
+
+class ReportInProgress(BaseModel):
+    total_eur: float
+    fixed_remaining_eur: float
+    tm_wip_eur: float
+    project_count: int
+    fixed_project_count: int = 0
+    tm_project_count: int = 0
+
+
+class ReportUtilization(BaseModel):
+    billable_hours: float
+    non_billable_hours: float
+    capacity_hours: float
+    utilization_pct: float
+    resource_count: int
+    working_days: int
+    hours_per_day: float = 8
+
+
+class ReportSummaryOut(BaseModel):
+    from_date: str
+    to_date: str
+    funnel: list[ReportFunnelBucket]
+    in_progress: ReportInProgress
+    utilization: ReportUtilization
+    delivered_eur: float
+    received_eur: float
 
 
 class PersonnelCandidateOut(BaseModel):
