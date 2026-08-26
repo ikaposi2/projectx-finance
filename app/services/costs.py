@@ -39,6 +39,19 @@ def applies_to_month(row: MonthlyCost, month: str) -> bool:
     return True
 
 
+async def list_all_costs(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+) -> list[MonthlyCost]:
+    result = await db.scalars(
+        select(MonthlyCost)
+        .where(MonthlyCost.tenant_id == tenant_id)
+        .order_by(MonthlyCost.label, MonthlyCost.start_month)
+    )
+    return list(result)
+
+
 async def list_costs_for_month(
     db: AsyncSession,
     *,

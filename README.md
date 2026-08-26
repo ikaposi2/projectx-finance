@@ -54,7 +54,7 @@ uvicorn app.main:app --reload --port 8007
 | GET | `/reserve` | manager+ | Reserve from **net** revenue (ex VAT) vs target |
 | GET | `/vat` | manager+ | Separate VAT account by calendar quarter |
 | POST | `/vat/remit` | manager+ | Record quarterly VAT remittance to tax authority |
-| GET | `/costs?month=YYYY-MM` | manager+ | One-off + recurring costs that apply to that month |
+| GET | `/costs?month=YYYY-MM` | manager+ | Costs that apply to that month (omit `month` for all definitions) |
 | POST | `/costs` | manager+ | Create one-off or recurring monthly cost |
 | PATCH | `/costs/{id}` | manager+ | Update cost / invoice matched+paid flags |
 | DELETE | `/costs/{id}` | manager+ | Remove a monthly cost |

@@ -400,15 +400,23 @@ def _to_cost(row) -> MonthlyCostOut:
 
 @router.get("/costs", response_model=list[MonthlyCostOut])
 async def get_costs(
-    month: str = Query(..., min_length=7, max_length=7, description="YYYY-MM"),
+    month: str | None = Query(
+        default=None,
+        min_length=7,
+        max_length=7,
+        description="YYYY-MM; omit to list all cost definitions",
+    ),
     principal: Principal = Depends(current_principal),
     db: AsyncSession = Depends(get_db),
 ) -> list[MonthlyCostOut]:
     _require_manager(principal)
     try:
-        rows = await cost_service.list_costs_for_month(
-            db, tenant_id=principal.tenant_id, month=month
-        )
+        if month:
+            rows = await cost_service.list_costs_for_month(
+                db, tenant_id=principal.tenant_id, month=month
+            )
+        else:
+            rows = await cost_service.list_all_costs(db, tenant_id=principal.tenant_id)
     except CostError as exc:
         raise HTTPException(status_code=422, detail=exc.detail) from exc
     return [_to_cost(r) for r in rows]
