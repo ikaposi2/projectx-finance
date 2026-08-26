@@ -28,6 +28,7 @@ from app.api.schemas import (
 from app.auth.jwt import Principal, decode_access_token
 from app.core.config import get_settings
 from app.db.session import get_db
+from app.observability import audit
 from app.services import costs as cost_service
 from app.services import ledger
 from app.services import personnel as personnel_service
@@ -470,6 +471,21 @@ async def post_generate_invoice(
     except UpstreamError as exc:
         code = 404 if "not_found" in exc.detail else 503
         raise HTTPException(status_code=code, detail=exc.detail) from exc
+    audit(
+        "invoice-generate",
+        outcome="success",
+        category=["api", "configuration"],
+        message="invoice draft generated",
+        **{
+            "user.id": principal.user_id,
+            "user.email": principal.email,
+            "organization.id": principal.tenant_id,
+            "project.id": body.project_id,
+            "labels.invoice_kind": body.kind,
+            "labels.period": body.period_label,
+            "labels.invoice_id": row.id,
+        },
+    )
     return await _to_invoice(db, row)
 
 
@@ -526,6 +542,21 @@ async def patch_invoice(
         row = await ledger.update_invoice_status(db, row, status=body.status, lines=lines)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if body.status in {"issued", "paid"}:
+        audit(
+            f"invoice-{body.status}",
+            outcome="success",
+            category=["api", "configuration"],
+            message=f"invoice marked {body.status}",
+            **{
+                "user.id": principal.user_id,
+                "user.email": principal.email,
+                "organization.id": principal.tenant_id,
+                "labels.invoice_id": invoice_id,
+                "project.id": row.project_id,
+            },
+        )
 
     # Mirror invoice lifecycle onto the project funnel dial.
     project_id = (row.project_id or "").strip()
