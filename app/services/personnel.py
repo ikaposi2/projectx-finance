@@ -206,7 +206,11 @@ async def generate_personnel_proposal(
         raise BillingError("resource_not_found")
 
     company = await get_or_create_company(db, tenant_id)
-    seller_name = str(resource.get("display_name") or "External consultant")
+    company = (resource.get("company_name") or "").strip()
+    person = (resource.get("display_name") or "").strip()
+    seller_name = company or person or "External consultant"
+    if company and person and company.lower() != person.lower():
+        seller_name = f"{company} ({person})"
     seller_address = _seller_address(resource)
     seller_vat = (resource.get("vat_id") or None) and str(resource.get("vat_id"))
     seller_bank = (resource.get("bank_account") or None) and str(resource.get("bank_account"))
