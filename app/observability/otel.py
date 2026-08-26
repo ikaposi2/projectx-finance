@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 
@@ -12,6 +13,15 @@ from app.observability.ecs_logging import configure_ecs_logging
 from app.observability.middleware import RequestAuditMiddleware
 
 logger = logging.getLogger(__name__)
+
+
+def _ecs_line(**fields: object) -> str:
+    doc = {
+        "@timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "ecs.version": "8.11.0",
+        **fields,
+    }
+    return json.dumps(doc, default=str, ensure_ascii=False)
 
 
 def setup_observability(app: FastAPI) -> None:
@@ -27,19 +37,13 @@ def setup_observability(app: FastAPI) -> None:
     if not endpoint:
         logger.info(
             "%s",
-            json.dumps(
-                {
-                    "@timestamp": __import__("datetime").datetime.now(
-                        __import__("datetime").timezone.utc
-                    )
-                    .isoformat()
-                    .replace("+00:00", "Z"),
-                    "message": "otel_disabled",
+            _ecs_line(
+                message="otel_disabled",
+                **{
                     "service.name": settings.service_name,
                     "event.action": "otel_setup",
                     "event.outcome": "success",
-                    "ecs.version": "8.11.0",
-                }
+                },
             ),
         )
         return
@@ -90,20 +94,14 @@ def setup_observability(app: FastAPI) -> None:
 
     logger.info(
         "%s",
-        json.dumps(
-            {
-                "@timestamp": __import__("datetime").datetime.now(
-                    __import__("datetime").timezone.utc
-                )
-                .isoformat()
-                .replace("+00:00", "Z"),
-                "message": "otel_enabled",
+        _ecs_line(
+            message="otel_enabled",
+            **{
                 "service.name": settings.service_name,
                 "service.environment": settings.environment,
                 "event.action": "otel_setup",
                 "event.outcome": "success",
                 "url.full": endpoint,
-                "ecs.version": "8.11.0",
-            }
+            },
         ),
     )
