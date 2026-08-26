@@ -141,7 +141,7 @@ async def personnel_candidates(
         hours = round(by_partner.get(partner_id, 0.0), 2)
         if hours <= 0:
             continue
-        rate = float(resource.get("internal_rate_eur") or settings.internal_rate_eur)
+        rate = float(resource.get("billable_rate_eur") or settings.internal_rate_eur)
         subtotal = round(hours * rate, 2)
         vat_eur = round(subtotal * (vat_rate / 100.0), 2)
         existing = await existing_proposal(
