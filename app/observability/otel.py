@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import FastAPI
 
 from app.core.config import get_settings
-from app.observability.ecs_logging import FlattenEcsForOtelFilter, configure_ecs_logging
+from app.observability.ecs_logging import configure_ecs_logging
 from app.observability.middleware import RequestAuditMiddleware
 
 logger = logging.getLogger(__name__)
@@ -25,8 +26,21 @@ def setup_observability(app: FastAPI) -> None:
     endpoint = (settings.otel_exporter_otlp_endpoint or "").rstrip("/")
     if not endpoint:
         logger.info(
-            "otel_disabled",
-            extra={"ecs": {"event.action": "otel_setup", "event.outcome": "success", "message": "OTEL endpoint unset"}},
+            "%s",
+            json.dumps(
+                {
+                    "@timestamp": __import__("datetime").datetime.now(
+                        __import__("datetime").timezone.utc
+                    )
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "message": "otel_disabled",
+                    "service.name": settings.service_name,
+                    "event.action": "otel_setup",
+                    "event.outcome": "success",
+                    "ecs.version": "8.11.0",
+                }
+            ),
         )
         return
 
@@ -63,8 +77,6 @@ def setup_observability(app: FastAPI) -> None:
 
     LoggingInstrumentor().instrument(set_logging_format=False)
     otel_handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
-    # Flatten nested ecs dict before OTel exports attributes (stdout handler runs first).
-    otel_handler.addFilter(FlattenEcsForOtelFilter())
     logging.getLogger().addHandler(otel_handler)
 
     FastAPIInstrumentor.instrument_app(app)
@@ -77,12 +89,21 @@ def setup_observability(app: FastAPI) -> None:
         pass
 
     logger.info(
-        "otel_enabled",
-        extra={
-            "ecs": {
+        "%s",
+        json.dumps(
+            {
+                "@timestamp": __import__("datetime").datetime.now(
+                    __import__("datetime").timezone.utc
+                )
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "message": "otel_enabled",
+                "service.name": settings.service_name,
+                "service.environment": settings.environment,
                 "event.action": "otel_setup",
                 "event.outcome": "success",
                 "url.full": endpoint,
+                "ecs.version": "8.11.0",
             }
-        },
+        ),
     )
