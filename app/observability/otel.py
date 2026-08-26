@@ -7,7 +7,7 @@ import logging
 from fastapi import FastAPI
 
 from app.core.config import get_settings
-from app.observability.ecs_logging import configure_ecs_logging
+from app.observability.ecs_logging import FlattenEcsForOtelFilter, configure_ecs_logging
 from app.observability.middleware import RequestAuditMiddleware
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,8 @@ def setup_observability(app: FastAPI) -> None:
 
     LoggingInstrumentor().instrument(set_logging_format=False)
     otel_handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
+    # Flatten nested ecs dict before OTel exports attributes (stdout handler runs first).
+    otel_handler.addFilter(FlattenEcsForOtelFilter())
     logging.getLogger().addHandler(otel_handler)
 
     FastAPIInstrumentor.instrument_app(app)
