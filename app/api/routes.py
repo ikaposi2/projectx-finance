@@ -35,7 +35,13 @@ from app.services.billing import (
     list_invoice_lines,
     update_company,
 )
-from app.services.clients import UpstreamError, fetch_bookable_projects, fetch_user_names, refuse_time_entry
+from app.services.clients import (
+    UpstreamError,
+    advance_project_funnel,
+    fetch_bookable_projects,
+    fetch_user_names,
+    refuse_time_entry,
+)
 from app.services.costs import CostError
 from app.services.pdf import resolve_pdf_absolute
 
@@ -354,9 +360,12 @@ async def patch_invoice(
     invoice_id: str,
     body: InvoiceUpdate,
     principal: Principal = Depends(current_principal),
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> InvoiceOut:
     _require_manager(principal)
+    if creds is None:
+        raise HTTPException(status_code=401, detail="not_authenticated")
     row = await ledger.get_invoice(db, tenant_id=principal.tenant_id, invoice_id=invoice_id)
     if row is None:
         raise HTTPException(status_code=404, detail="not_found")
@@ -365,6 +374,26 @@ async def patch_invoice(
         row = await ledger.update_invoice_status(db, row, status=body.status, lines=lines)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # Mirror invoice lifecycle onto the project funnel dial.
+    project_id = (row.project_id or "").strip()
+    if project_id:
+        target: str | None = None
+        if body.status == "issued":
+            target = "invoiced"
+        elif body.status == "paid":
+            target = "closed"
+        if target:
+            try:
+                await advance_project_funnel(
+                    project_id=project_id,
+                    funnel_status=target,
+                    access_token=creds.credentials,
+                )
+            except UpstreamError:
+                # Invoice change already committed; funnel sync is best-effort.
+                pass
+
     return await _to_invoice(db, row)
 
 

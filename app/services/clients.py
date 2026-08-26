@@ -88,3 +88,30 @@ async def refuse_time_entry(*, time_entry_id: str, access_token: str) -> None:
         raise UpstreamError("not_refusable")
     if res.status_code >= 400:
         raise UpstreamError("time_unavailable")
+
+
+async def advance_project_funnel(
+    *,
+    project_id: str,
+    funnel_status: str,
+    access_token: str,
+) -> None:
+    """Best-effort project funnel update after invoice send/pay."""
+    if not project_id:
+        return
+    url = f"{settings.project_service_url.rstrip('/')}/projects/{project_id}/funnel"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            res = await client.post(
+                url,
+                headers=headers,
+                json={"funnel_status": funnel_status},
+            )
+    except httpx.HTTPError as exc:
+        raise UpstreamError("project_unavailable") from exc
+    if res.status_code >= 400:
+        raise UpstreamError(res.text or "project_funnel_failed")

@@ -11,8 +11,6 @@ from app.services.clients import UpstreamError, fetch_customer, fetch_project
 
 settings = get_settings()
 
-PROGRESS_RANK = {"none": 0, "25": 25, "50": 50, "75": 75, "complete": 100}
-
 
 class BillingError(Exception):
     def __init__(self, detail: str):
@@ -183,27 +181,16 @@ async def resolve_actions_for_project(
 ) -> list[dict]:
     project_id = str(project.get("id") or "")
     fixed = float(project.get("fixed_price_eur") or 0)
-    progress = str(project.get("progress") or "none")
-    rank = PROGRESS_RANK.get(progress, 0)
+    funnel = str(project.get("funnel_status") or "ordered").strip()
+    if funnel == "finalizing":
+        funnel = "delivered"
     actions: list[dict] = []
 
     already = await billed_amount_for_project(db, tenant_id=tenant_id, project_id=project_id)
     remaining_fixed = round(max(0.0, fixed - already), 2)
 
-    if fixed > float(settings.milestone_threshold_eur) and rank >= 50:
-        if not await has_milestone_invoice(db, tenant_id=tenant_id, project_id=project_id):
-            milestone = round(fixed * 0.5, 2)
-            if milestone > 0 and already < milestone:
-                actions.append(
-                    {
-                        "kind": "fixed_milestone_50",
-                        "label": "50% milestone invoice",
-                        "amount_eur": milestone,
-                        "enabled": True,
-                    }
-                )
-
-    if progress == "complete" and remaining_fixed > 0.009:
+    # Finance leads once the project is delivered (progress milestones removed).
+    if funnel == "delivered" and fixed > 0.009 and remaining_fixed > 0.009:
         actions.append(
             {
                 "kind": "fixed_completion",
@@ -213,9 +200,8 @@ async def resolve_actions_for_project(
             }
         )
 
-    # Fixed-price work is invoiced via milestone/completion only — no separate T&M invoice.
-    # Pure T&M projects (no fixed price) bill approved hours.
-    if fixed <= 0.009:
+    # Pure T&M projects (no fixed price) bill approved hours once delivered.
+    if fixed <= 0.009 and funnel == "delivered":
         unbilled = await unbilled_billable_effects(db, tenant_id=tenant_id, project_id=project_id)
         hours = round(sum(float(e.hours) for e in unbilled), 2)
         if hours > 0:
@@ -263,7 +249,7 @@ async def list_billing_candidates(
                 "customer_id": detail.get("customer_id"),
                 "customer_name": detail.get("customer_name") or brief.get("customer_name"),
                 "fixed_price_eur": float(detail.get("fixed_price_eur") or 0),
-                "progress": detail.get("progress") or "none",
+                "progress": detail.get("funnel_status") or detail.get("progress") or "none",
                 "report_url": detail.get("report_url"),
                 "actions": actions,
             }
