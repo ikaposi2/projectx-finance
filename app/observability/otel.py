@@ -54,11 +54,13 @@ def setup_observability(app: FastAPI) -> None:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
     from opentelemetry.instrumentation.logging import LoggingInstrumentor
-    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    from opentelemetry.sdk._logs import LoggerProvider
     from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    from app.observability.ecs_otlp_handler import EcsOtlpLoggingHandler
 
     resource = Resource.create(
         {
@@ -80,7 +82,7 @@ def setup_observability(app: FastAPI) -> None:
     set_logger_provider(logger_provider)
 
     LoggingInstrumentor().instrument(set_logging_format=False)
-    otel_handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
+    otel_handler = EcsOtlpLoggingHandler(level=logging.INFO, logger_provider=logger_provider)
     logging.getLogger().addHandler(otel_handler)
 
     FastAPIInstrumentor.instrument_app(app)
