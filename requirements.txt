@@ -16,3 +16,4 @@ reportlab==4.2.5
 boto3==1.35.76
 botocore==1.35.76
 opentelemetry-instrumentation-logging==0.50b0
+opentelemetry-instrumentation-httpx==0.50b0

@@ -53,14 +53,19 @@ def setup_observability(app: FastAPI) -> None:
     from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
     from opentelemetry.instrumentation.logging import LoggingInstrumentor
+    from opentelemetry.propagate import set_global_textmap
     from opentelemetry.sdk._logs import LoggerProvider
     from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
     from app.observability.ecs_otlp_handler import EcsOtlpLoggingHandler
+
+    set_global_textmap(TraceContextTextMapPropagator())
 
     resource = Resource.create(
         {
@@ -85,7 +90,11 @@ def setup_observability(app: FastAPI) -> None:
     otel_handler = EcsOtlpLoggingHandler(level=logging.INFO, logger_provider=logger_provider)
     logging.getLogger().addHandler(otel_handler)
 
-    FastAPIInstrumentor.instrument_app(app)
+    FastAPIInstrumentor.instrument_app(
+        app,
+        excluded_urls="/health,/docs,/openapi.json,/redoc",
+    )
+    HTTPXClientInstrumentor().instrument()
 
     try:
         from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
