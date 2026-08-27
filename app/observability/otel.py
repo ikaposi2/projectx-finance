@@ -53,7 +53,13 @@ def setup_observability(app: FastAPI) -> None:
     from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    HTTPXClientInstrumentor = None
+    try:
+        import httpx  # noqa: F401
+
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    except ImportError:
+        pass
     from opentelemetry.instrumentation.logging import LoggingInstrumentor
     from opentelemetry.propagate import set_global_textmap
     from opentelemetry.sdk._logs import LoggerProvider
@@ -94,7 +100,8 @@ def setup_observability(app: FastAPI) -> None:
         app,
         excluded_urls="/health,/docs,/openapi.json,/redoc",
     )
-    HTTPXClientInstrumentor().instrument()
+    if HTTPXClientInstrumentor is not None:
+        HTTPXClientInstrumentor().instrument()
 
     try:
         from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
