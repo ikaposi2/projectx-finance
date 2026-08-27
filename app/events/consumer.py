@@ -9,7 +9,10 @@ from nats.js.api import RetentionPolicy, StorageType, StreamConfig
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal
+from app.observability.messaging import attach_consumer_context, nats_consume_span
 from app.services.ledger import apply_time_approval, reverse_time_effect
+
+from opentelemetry import context as otel_context
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -117,9 +120,17 @@ async def run_consumer(stop: asyncio.Event) -> None:
                     break
 
                 for msg in msgs:
+                    token = None
                     try:
                         envelope = json.loads(msg.data.decode("utf-8"))
-                        await handle_envelope(envelope)
+                        ctx = attach_consumer_context(envelope)
+                        token = otel_context.attach(ctx)
+                        event_type = str(envelope.get("type") or "unknown")
+                        with nats_consume_span(
+                            subject=settings.nats_filter_subject,
+                            event_type=event_type,
+                        ):
+                            await handle_envelope(envelope)
                         await msg.ack()
                     except Exception:
                         logger.exception("failed handling time event")
@@ -127,6 +138,9 @@ async def run_consumer(stop: asyncio.Event) -> None:
                             await msg.nak()
                         except Exception:
                             pass
+                    finally:
+                        if token is not None:
+                            otel_context.detach(token)
         except asyncio.CancelledError:
             raise
         except Exception:
