@@ -481,9 +481,9 @@ async def post_generate_invoice(
             "user.email": principal.email,
             "organization.id": principal.tenant_id,
             "project.id": body.project_id,
-            "labels.invoice_kind": body.kind,
-            "labels.period": body.period_label,
-            "labels.invoice_id": row.id,
+            "invoice.kind": body.kind,
+            "invoice.period": body.period_label,
+            "invoice.id": row.id,
         },
     )
     return await _to_invoice(db, row)
@@ -544,16 +544,23 @@ async def patch_invoice(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     if body.status in {"issued", "paid"}:
+        # issued ≈ "sent" today (PDF archived; email delivery not implemented yet)
+        action = "invoice-sent" if body.status == "issued" else "invoice-paid"
         audit(
-            f"invoice-{body.status}",
+            action,
             outcome="success",
             category=["api", "configuration"],
-            message=f"invoice marked {body.status}",
+            message=(
+                "invoice marked issued (sent / PDF archived)"
+                if body.status == "issued"
+                else "invoice marked paid"
+            ),
             **{
                 "user.id": principal.user_id,
                 "user.email": principal.email,
                 "organization.id": principal.tenant_id,
-                "labels.invoice_id": invoice_id,
+                "invoice.id": invoice_id,
+                "invoice.status": body.status,
                 "project.id": row.project_id,
             },
         )

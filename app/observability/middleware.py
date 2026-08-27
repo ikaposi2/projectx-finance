@@ -9,17 +9,22 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.observability.audit import audit
+from app.observability.audit import audit, set_audit_session_id
 
 
-def _principal_from_request(request: Request) -> tuple[str | None, str | None, str | None]:
-    """Best-effort JWT decode for audit fields (never raises)."""
+def _principal_from_request(
+    request: Request,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Best-effort JWT decode for audit fields (never raises).
+
+    Returns user_id, email, tenant_id, session_id (jti).
+    """
     auth = request.headers.get("authorization") or request.headers.get("Authorization")
     if not auth or not auth.lower().startswith("bearer "):
-        return None, None, None
+        return None, None, None, None
     token = auth.split(" ", 1)[1].strip()
     if not token:
-        return None, None, None
+        return None, None, None, None
     try:
         from jose import jwt
 
@@ -36,15 +41,19 @@ def _principal_from_request(request: Request) -> tuple[str | None, str | None, s
             str(payload.get("sub") or "") or None,
             str(payload.get("email") or "") or None,
             str(payload.get("tenant_id") or "") or None,
+            str(payload.get("jti") or "") or None,
         )
     except Exception:
-        return None, None, None
+        return None, None, None, None
 
 
 class RequestAuditMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        if request.url.path in {"/health", "/docs", "/openapi.json", "/redoc"}:
+        if request.url.path in {"/health", "/docs", "/openapi.json", "/redoc", "/brand"}:
             return await call_next(request)
+
+        user_id, email, tenant_id, session_id = _principal_from_request(request)
+        set_audit_session_id(session_id)
 
         started = time.perf_counter()
         status_code = 500
@@ -54,7 +63,6 @@ class RequestAuditMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
-            user_id, email, tenant_id = _principal_from_request(request)
             outcome = "success" if status_code < 400 else "failure"
             audit(
                 "http_request",
@@ -71,7 +79,9 @@ class RequestAuditMiddleware(BaseHTTPMiddleware):
                     "user.id": user_id,
                     "user.email": email,
                     "organization.id": tenant_id,
+                    "session.id": session_id,
                     "client.ip": request.client.host if request.client else None,
                     "user_agent.original": request.headers.get("user-agent"),
                 },
             )
+            set_audit_session_id(None)
