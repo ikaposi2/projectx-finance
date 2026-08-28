@@ -5,6 +5,7 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.openapi import API_DESCRIPTION, API_VERSION, OPENAPI_TAGS, configure_openapi
 from app.api.routes import router
 from app.core.config import get_settings
 from app.db.session import init_db
@@ -31,8 +32,10 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="projectX-finance",
-    version="0.1.0",
+    title=settings.service_name,
+    version=API_VERSION,
+    description=API_DESCRIPTION,
+    openapi_tags=OPENAPI_TAGS,
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -43,4 +46,5 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(router)
+configure_openapi(app)
 setup_observability(app)

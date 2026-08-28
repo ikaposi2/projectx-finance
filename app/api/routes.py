@@ -351,6 +351,7 @@ async def get_billing_candidates(
     creds: HTTPAuthorizationCredentials | None = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> list[BillingCandidate]:
+    """Projects ready to invoice; T&M actions scoped to the selected month."""
     _require_manager(principal)
     if creds is None:
         raise HTTPException(status_code=401, detail="not_authenticated")
