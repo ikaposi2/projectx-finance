@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,18 +20,24 @@ from app.api.schemas import (
     MonthlyCostUpdate,
     PersonnelCandidateOut,
     PersonnelGenerate,
+    InboxMessageOut,
+    InboxUnreadOut,
+    InboxOpenOut,
+    MonthlyPersonnelRunOut,
     ReportSummaryOut,
     ReserveSnapshot,
     VatAccountOut,
     VatRemitRequest,
 )
 from app.auth.jwt import Principal, decode_access_token
+from app.auth.service_token import mint_service_access_token
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.observability import audit
 from app.services import costs as cost_service
 from app.services import ledger
 from app.services import personnel as personnel_service
+from app.services import inbox as inbox_service
 from app.services.billing import (
     BillingError,
     generate_invoice,
@@ -444,6 +450,99 @@ async def post_personnel_generate(
     except UpstreamError as exc:
         raise HTTPException(status_code=502, detail=exc.detail) from exc
     return await _to_invoice(db, row)
+
+
+def _verify_internal_cron(x_internal_token: str | None = Header(default=None)) -> None:
+    expected = (settings.internal_cron_token or "").strip()
+    if not expected or not x_internal_token or x_internal_token != expected:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+@router.post("/internal/personnel-invoices/run-monthly", response_model=MonthlyPersonnelRunOut)
+async def run_monthly_personnel_proposals(
+    month: str | None = Query(default=None, min_length=7, max_length=7, pattern=r"^\d{4}-\d{2}$"),
+    _: None = Depends(_verify_internal_cron),
+    db: AsyncSession = Depends(get_db),
+) -> MonthlyPersonnelRunOut:
+    tenant_id = (settings.cron_tenant_id or "").strip()
+    actor_id = (settings.cron_actor_user_id or "").strip()
+    if not tenant_id or not actor_id:
+        raise HTTPException(status_code=503, detail="cron_not_configured")
+    target_month = month or personnel_service.previous_calendar_month()
+    token = mint_service_access_token(user_id=actor_id, tenant_id=tenant_id, role="admin")
+    stats = await personnel_service.generate_monthly_personnel_proposals(
+        db,
+        tenant_id=tenant_id,
+        access_token=token,
+        month=target_month,
+    )
+    return MonthlyPersonnelRunOut(**stats)
+
+
+@router.get("/inbox", response_model=list[InboxMessageOut])
+async def get_inbox(
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+) -> list[InboxMessageOut]:
+    rows = await inbox_service.list_inbox(
+        db, tenant_id=principal.tenant_id, user_id=principal.user_id
+    )
+    return [InboxMessageOut(**row) for row in rows]
+
+
+@router.get("/inbox/unread-count", response_model=InboxUnreadOut)
+async def get_inbox_unread_count(
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+) -> InboxUnreadOut:
+    count = await inbox_service.unread_inbox_count(
+        db, tenant_id=principal.tenant_id, user_id=principal.user_id
+    )
+    return InboxUnreadOut(count=count)
+
+
+@router.post("/inbox/{message_id}/open", response_model=InboxOpenOut)
+async def open_inbox_message(
+    message_id: str,
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+) -> InboxOpenOut:
+    result = await inbox_service.open_inbox_message(
+        db,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        message_id=message_id,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    return InboxOpenOut(**result)
+
+
+@router.get("/inbox/invoices/{invoice_id}/pdf")
+async def get_partner_invoice_pdf(
+    invoice_id: str,
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await inbox_service.get_partner_invoice_pdf(
+        db,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        invoice_id=invoice_id,
+    )
+    if row is None or not row.pdf_path:
+        raise HTTPException(status_code=404, detail="not_found")
+    from app.services.pdf import load_pdf_bytes
+
+    data = load_pdf_bytes(row.pdf_path)
+    if not data:
+        raise HTTPException(status_code=404, detail="pdf_missing")
+    filename = f"{row.invoice_number or invoice_id}.pdf"
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 
 @router.post("/invoices/generate", response_model=InvoiceOut, status_code=status.HTTP_201_CREATED)

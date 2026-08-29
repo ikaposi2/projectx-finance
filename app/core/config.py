@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     s3_secret_access_key: str = Field(default="", validation_alias="S3_SECRET_ACCESS_KEY")
     s3_region: str = Field(default="eu01", validation_alias="S3_REGION")
     s3_prefix: str = Field(default="finance/invoices", validation_alias="S3_PREFIX")
+    internal_cron_token: str = Field(default="", validation_alias="INTERNAL_CRON_TOKEN")
+    cron_tenant_id: str = Field(default="", validation_alias="CRON_TENANT_ID")
+    cron_actor_user_id: str = Field(default="", validation_alias="CRON_ACTOR_USER_ID")
     otel_exporter_otlp_endpoint: str | None = None
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

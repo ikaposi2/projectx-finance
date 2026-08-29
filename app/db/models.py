@@ -99,6 +99,21 @@ class Invoice(Base):
     )
 
 
+class InboxMessage(Base):
+    """User inbox item (e.g. personnel payment proposal PDF)."""
+
+    __tablename__ = "inbox_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    invoice_id: Mapped[str] = mapped_column(String(36), index=True)
+    kind: Mapped[str] = mapped_column(String(40), default="personnel_proposal")
+    title: Mapped[str] = mapped_column(String(200))
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class InvoiceLine(Base):
     __tablename__ = "invoice_lines"
 

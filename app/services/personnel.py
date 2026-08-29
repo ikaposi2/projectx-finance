@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import calendar
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.db.models import Invoice, InvoiceLine
+from app.db.models import InboxMessage, Invoice, InvoiceLine
 from app.services.billing import BillingError, _format_address, get_or_create_company
 from app.services.clients import fetch_resources, fetch_time_entries
 from app.services.pdf import generate_invoice_pdf
@@ -187,6 +187,14 @@ async def personnel_legacy_proposed_hours(
     return round(total, 4)
 
 
+def _is_past_work_date(work_date: str) -> bool:
+    """Only hours on or before today can be proposed for payment."""
+    try:
+        return date.fromisoformat(str(work_date)[:10]) <= date.today()
+    except ValueError:
+        return False
+
+
 def _approved_billable_entries(entries: list[dict], *, partner_id: str) -> list[dict]:
     rows = [
         e
@@ -195,6 +203,7 @@ def _approved_billable_entries(entries: list[dict], *, partner_id: str) -> list[
         and e.get("status") == "approved"
         and e.get("classification") == "billable"
         and float(e.get("hours") or 0) > 0
+        and _is_past_work_date(str(e.get("work_date") or ""))
     ]
     return sorted(rows, key=lambda e: (str(e.get("work_date") or ""), str(e.get("id") or "")))
 
@@ -410,6 +419,58 @@ async def generate_personnel_proposal(
 
     invoice.issued_at = datetime.now(timezone.utc)
     invoice.pdf_path = generate_invoice_pdf(invoice, line_models, document_title="FACTUURVOORSTEL")
+    db.add(
+        InboxMessage(
+            tenant_id=tenant_id,
+            user_id=partner_id,
+            invoice_id=invoice.id,
+            kind=PERSONNEL_KIND,
+            title=f"{invoice.invoice_number} — {month_label}",
+        )
+    )
     await db.commit()
     await db.refresh(invoice)
     return invoice
+
+
+def previous_calendar_month(today: date | None = None) -> str:
+    ref = today or date.today()
+    year, month = ref.year, ref.month - 1
+    if month < 1:
+        month = 12
+        year -= 1
+    return f"{year:04d}-{month:02d}"
+
+
+async def generate_monthly_personnel_proposals(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    access_token: str,
+    month: str,
+) -> dict[str, int]:
+    """Create proposals for all externals with unbilled past hours in the month."""
+    candidates = await personnel_candidates(
+        db, tenant_id=tenant_id, access_token=access_token, month=month
+    )
+    created = 0
+    skipped = 0
+    errors = 0
+    for cand in candidates:
+        if float(cand.get("hours") or 0) <= 0:
+            skipped += 1
+            continue
+        try:
+            await generate_personnel_proposal(
+                db,
+                tenant_id=tenant_id,
+                access_token=access_token,
+                partner_id=str(cand["partner_id"]),
+                month=month,
+            )
+            created += 1
+        except BillingError:
+            skipped += 1
+        except Exception:
+            errors += 1
+    return {"month": month, "created": created, "skipped": skipped, "errors": errors}

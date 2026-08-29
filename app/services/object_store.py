@@ -73,3 +73,20 @@ def download_pdf_bytes(object_key: str) -> bytes | None:
     except Exception:
         logger.exception("failed downloading pdf from object store key=%s", object_key)
         return None
+
+
+def presigned_pdf_url(relative_path: str, *, expires_seconds: int = 3600) -> str | None:
+    """Temporary HTTPS URL for an archived PDF in object storage."""
+    client = _client()
+    if client is None or not settings.s3_bucket:
+        return None
+    key = object_key_for_pdf(relative_path)
+    try:
+        return client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": settings.s3_bucket, "Key": key},
+            ExpiresIn=expires_seconds,
+        )
+    except Exception:
+        logger.exception("failed presigning pdf key=%s", key)
+        return None

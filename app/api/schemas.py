@@ -264,3 +264,36 @@ class PersonnelGenerate(BaseModel):
     partner_id: str = Field(min_length=1, max_length=36)
     month: str = Field(min_length=7, max_length=7, pattern=r"^\d{4}-\d{2}$")
 
+
+class InboxMessageOut(BaseModel):
+    id: str
+    kind: str
+    title: str
+    invoice_id: str
+    invoice_number: str
+    period_label: str | None = None
+    amount_eur: float
+    read: bool
+    read_at: str | None = None
+    created_at: str | None = None
+
+
+class InboxUnreadOut(BaseModel):
+    count: int
+
+
+class InboxOpenOut(BaseModel):
+    id: str
+    invoice_id: str
+    invoice_number: str
+    pdf_url: str
+    read: bool
+    read_at: str | None = None
+
+
+class MonthlyPersonnelRunOut(BaseModel):
+    month: str
+    created: int
+    skipped: int
+    errors: int
+
