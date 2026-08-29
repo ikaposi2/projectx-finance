@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -72,24 +73,6 @@ async def next_proposal_number(db: AsyncSession, tenant_id: str) -> str:
     return f"{prefix}{max_seq + 1:04d}"
 
 
-async def existing_proposal(
-    db: AsyncSession,
-    *,
-    tenant_id: str,
-    partner_id: str,
-    month: str,
-) -> Invoice | None:
-    return await db.scalar(
-        select(Invoice).where(
-            Invoice.tenant_id == tenant_id,
-            Invoice.kind == PERSONNEL_KIND,
-            Invoice.partner_id == partner_id,
-            Invoice.period_label == month,
-            Invoice.status.in_(("draft", "issued", "paid")),
-        )
-    )
-
-
 async def list_personnel_proposals(
     db: AsyncSession,
     *,
@@ -106,6 +89,143 @@ async def list_personnel_proposals(
     return list(result)
 
 
+async def latest_personnel_proposal(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    partner_id: str,
+    month: str,
+) -> Invoice | None:
+    return await db.scalar(
+        select(Invoice)
+        .where(
+            Invoice.tenant_id == tenant_id,
+            Invoice.kind == PERSONNEL_KIND,
+            Invoice.partner_id == partner_id,
+            Invoice.period_label == month,
+            Invoice.status.in_(("draft", "issued", "paid")),
+        )
+        .order_by(Invoice.created_at.desc())
+        .limit(1)
+    )
+
+
+async def _personnel_proposal_invoice_ids(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    partner_id: str,
+    month: str,
+) -> list[str]:
+    rows = await db.scalars(
+        select(Invoice.id).where(
+            Invoice.tenant_id == tenant_id,
+            Invoice.kind == PERSONNEL_KIND,
+            Invoice.partner_id == partner_id,
+            Invoice.period_label == month,
+            Invoice.status.in_(("draft", "issued", "paid")),
+        )
+    )
+    return [str(i) for i in rows]
+
+
+async def personnel_billed_time_entry_ids(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    partner_id: str,
+    month: str,
+) -> set[str]:
+    inv_ids = await _personnel_proposal_invoice_ids(
+        db, tenant_id=tenant_id, partner_id=partner_id, month=month
+    )
+    if not inv_ids:
+        return set()
+    lines = await db.scalars(
+        select(InvoiceLine.time_entry_id).where(
+            InvoiceLine.tenant_id == tenant_id,
+            InvoiceLine.invoice_id.in_(inv_ids),
+            InvoiceLine.time_entry_id.is_not(None),
+        )
+    )
+    return {str(x) for x in lines if x}
+
+
+async def personnel_legacy_proposed_hours(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    partner_id: str,
+    month: str,
+) -> float:
+    """
+    Hours covered by legacy aggregate personnel lines (no time_entry_id).
+
+    Older proposals used one summary line; treat that quantity as FIFO-consumed
+    approved billable hours for the partner in the month.
+    """
+    inv_ids = await _personnel_proposal_invoice_ids(
+        db, tenant_id=tenant_id, partner_id=partner_id, month=month
+    )
+    if not inv_ids:
+        return 0.0
+    total = 0.0
+    for inv_id in inv_ids:
+        lines = list(
+            await db.scalars(
+                select(InvoiceLine).where(
+                    InvoiceLine.tenant_id == tenant_id,
+                    InvoiceLine.invoice_id == inv_id,
+                )
+            )
+        )
+        if not lines:
+            continue
+        if any(line.time_entry_id for line in lines):
+            continue
+        total += sum(float(line.quantity or 0) for line in lines)
+    return round(total, 4)
+
+
+def _approved_billable_entries(entries: list[dict], *, partner_id: str) -> list[dict]:
+    rows = [
+        e
+        for e in entries
+        if str(e.get("partner_id") or "") == partner_id
+        and e.get("status") == "approved"
+        and e.get("classification") == "billable"
+        and float(e.get("hours") or 0) > 0
+    ]
+    return sorted(rows, key=lambda e: (str(e.get("work_date") or ""), str(e.get("id") or "")))
+
+
+def unbilled_personnel_entries(
+    entries: list[dict],
+    *,
+    partner_id: str,
+    billed_entry_ids: set[str],
+    legacy_hours_remaining: float,
+) -> list[dict[str, Any]]:
+    unbilled: list[dict[str, Any]] = []
+    legacy_left = max(0.0, legacy_hours_remaining)
+    for entry in _approved_billable_entries(entries, partner_id=partner_id):
+        entry_id = str(entry.get("id") or "")
+        if not entry_id or entry_id in billed_entry_ids:
+            continue
+        hours = float(entry["hours"])
+        if legacy_left > 0:
+            if legacy_left >= hours - 1e-9:
+                legacy_left = round(legacy_left - hours, 4)
+                continue
+            remaining = round(hours - legacy_left, 4)
+            legacy_left = 0.0
+            if remaining > 0:
+                unbilled.append({**entry, "hours": remaining})
+            continue
+        unbilled.append(dict(entry))
+    return unbilled
+
+
 async def personnel_candidates(
     db: AsyncSession,
     *,
@@ -113,7 +233,7 @@ async def personnel_candidates(
     access_token: str,
     month: str,
 ) -> list[dict]:
-    """External resources with approved billable hours in the month (by work_date)."""
+    """External resources with unbilled approved billable hours in the month."""
     from_day, to_day = _month_bounds(month)
     resources = await fetch_resources(access_token=access_token)
     externals = [r for r in resources if (r.get("kind") or "external") == "external" and r.get("active", True)]
@@ -121,32 +241,30 @@ async def personnel_candidates(
         return []
 
     entries = await fetch_time_entries(access_token=access_token, from_date=from_day, to_date=to_day)
-    approved = [
-        e
-        for e in entries
-        if e.get("status") == "approved"
-        and e.get("classification") == "billable"
-        and float(e.get("hours") or 0) > 0
-    ]
-
-    by_partner: dict[str, float] = {}
-    for e in approved:
-        pid = str(e.get("partner_id") or "")
-        if not pid:
-            continue
-        by_partner[pid] = by_partner.get(pid, 0.0) + float(e["hours"])
 
     vat_rate = float(settings.default_vat_rate)
     out: list[dict] = []
     for resource in externals:
         partner_id = str(resource.get("partner_id") or "")
-        hours = round(by_partner.get(partner_id, 0.0), 2)
+        billed_ids = await personnel_billed_time_entry_ids(
+            db, tenant_id=tenant_id, partner_id=partner_id, month=month
+        )
+        legacy_hours = await personnel_legacy_proposed_hours(
+            db, tenant_id=tenant_id, partner_id=partner_id, month=month
+        )
+        unbilled = unbilled_personnel_entries(
+            entries,
+            partner_id=partner_id,
+            billed_entry_ids=billed_ids,
+            legacy_hours_remaining=legacy_hours,
+        )
+        hours = round(sum(float(e.get("hours") or 0) for e in unbilled), 2)
         if hours <= 0:
             continue
         rate = float(resource.get("billable_rate_eur") or settings.internal_rate_eur)
         subtotal = round(hours * rate, 2)
         vat_eur = round(subtotal * (vat_rate / 100.0), 2)
-        existing = await existing_proposal(
+        existing = await latest_personnel_proposal(
             db, tenant_id=tenant_id, partner_id=partner_id, month=month
         )
         out.append(
@@ -181,19 +299,6 @@ async def generate_personnel_proposal(
     if len(month) != 7 or month[4] != "-":
         raise BillingError("invalid_month")
 
-    existing = await existing_proposal(
-        db, tenant_id=tenant_id, partner_id=partner_id, month=month
-    )
-    if existing is not None:
-        raise BillingError("proposal_already_exists")
-
-    candidates = await personnel_candidates(
-        db, tenant_id=tenant_id, access_token=access_token, month=month
-    )
-    cand = next((c for c in candidates if c["partner_id"] == partner_id), None)
-    if cand is None:
-        raise BillingError("no_hours_for_month")
-
     resources = await fetch_resources(access_token=access_token)
     resource = next(
         (
@@ -206,6 +311,26 @@ async def generate_personnel_proposal(
     )
     if resource is None:
         raise BillingError("resource_not_found")
+
+    from_day, to_day = _month_bounds(month)
+    entries = await fetch_time_entries(access_token=access_token, from_date=from_day, to_date=to_day)
+    billed_ids = await personnel_billed_time_entry_ids(
+        db, tenant_id=tenant_id, partner_id=partner_id, month=month
+    )
+    legacy_hours = await personnel_legacy_proposed_hours(
+        db, tenant_id=tenant_id, partner_id=partner_id, month=month
+    )
+    unbilled = unbilled_personnel_entries(
+        entries,
+        partner_id=partner_id,
+        billed_entry_ids=billed_ids,
+        legacy_hours_remaining=legacy_hours,
+    )
+    if not unbilled:
+        raise BillingError("no_hours_for_month")
+
+    rate = float(resource.get("billable_rate_eur") or settings.internal_rate_eur)
+    vat_rate = float(settings.default_vat_rate)
 
     buyer = await get_or_create_company(db, tenant_id)
     seller_company = (resource.get("company_name") or "").strip()
@@ -220,12 +345,10 @@ async def generate_personnel_proposal(
     buyer_address = _buyer_address(buyer)
     buyer_vat = buyer.vat_id or settings.company_vat_id or None
 
-    hours = float(cand["hours"])
-    rate = float(cand["rate_eur"])
-    subtotal = float(cand["subtotal_eur"])
-    vat_rate = float(cand["vat_rate"])
-    vat_eur = float(cand["vat_eur"])
-    total = float(cand["total_eur"])
+    hours = round(sum(float(e.get("hours") or 0) for e in unbilled), 2)
+    subtotal = round(hours * rate, 2)
+    vat_eur = round(subtotal * (vat_rate / 100.0), 2)
+    total = round(subtotal + vat_eur, 2)
 
     month_label = datetime.strptime(f"{month}-01", "%Y-%m-%d").strftime("%B %Y")
     description = (
@@ -261,24 +384,32 @@ async def generate_personnel_proposal(
     db.add(invoice)
     await db.flush()
 
-    line = InvoiceLine(
-        invoice_id=invoice.id,
-        tenant_id=tenant_id,
-        description=f"Consultancy hours — {month_label} ({hours:g} h × €{rate:,.2f})",
-        quantity=hours,
-        unit="hour",
-        unit_price_eur=rate,
-        amount_eur=subtotal,
-        source="personnel_hours",
-        time_entry_id=None,
-    )
-    db.add(line)
+    line_models: list[InvoiceLine] = []
+    for entry in unbilled:
+        entry_hours = float(entry.get("hours") or 0)
+        if entry_hours <= 0:
+            continue
+        work_date = str(entry.get("work_date") or "")
+        line = InvoiceLine(
+            invoice_id=invoice.id,
+            tenant_id=tenant_id,
+            description=f"Consultancy hours — {work_date} ({entry_hours:g} h × €{rate:,.2f})",
+            quantity=entry_hours,
+            unit="hour",
+            unit_price_eur=rate,
+            amount_eur=round(entry_hours * rate, 2),
+            source="personnel_hours",
+            time_entry_id=str(entry.get("id") or "") or None,
+        )
+        db.add(line)
+        line_models.append(line)
     await db.flush()
 
-    # Draft proposals get a PDF immediately so they can be sent as factuurvoorstel.
+    if not line_models:
+        raise BillingError("no_hours_for_month")
+
     invoice.issued_at = datetime.now(timezone.utc)
-    lines = [line]
-    invoice.pdf_path = generate_invoice_pdf(invoice, lines, document_title="FACTUURVOORSTEL")
+    invoice.pdf_path = generate_invoice_pdf(invoice, line_models, document_title="FACTUURVOORSTEL")
     await db.commit()
     await db.refresh(invoice)
     return invoice

@@ -439,7 +439,7 @@ async def post_personnel_generate(
             month=body.month,
         )
     except BillingError as exc:
-        code = 409 if exc.detail in {"proposal_already_exists", "no_hours_for_month"} else 422
+        code = 409 if exc.detail in {"no_hours_for_month"} else 422
         raise HTTPException(status_code=code, detail=exc.detail) from exc
     except UpstreamError as exc:
         raise HTTPException(status_code=502, detail=exc.detail) from exc
