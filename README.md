@@ -47,6 +47,7 @@ uvicorn app.main:app --reload --port 8007
 | GET | `/reports/summary?from=&to=` | manager+ | Five management figures (funnel, WIP, utilization, delivered, received) |
 | POST | `/invoices/generate` | manager+ | Create draft from project + kind (`period_label` required for `tm_hours`) |
 | GET | `/invoices` | manager+ | List invoices (with lines) |
+| GET | `/invoices/archive?year=&quarter=` | manager+ | Collect invoices for a quarter or full year (issue date) |
 | PATCH | `/invoices/{id}` | manager+ | `draft` → `issued` (send) → `paid` \| `returned`; `paid` → `issued` |
 | DELETE | `/invoices/{id}` | manager+ | Remove `draft` or `returned` invoice (unlocks hours) |
 | GET | `/invoices/{id}/pdf` | manager+ | Download archived PDF (generated on send) |

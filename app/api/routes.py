@@ -24,6 +24,7 @@ from app.api.schemas import (
     InboxUnreadOut,
     InboxOpenOut,
     MonthlyPersonnelRunOut,
+    InvoiceArchiveOut,
     ReportSummaryOut,
     ReserveSnapshot,
     VatAccountOut,
@@ -38,6 +39,7 @@ from app.services import costs as cost_service
 from app.services import ledger
 from app.services import personnel as personnel_service
 from app.services import inbox as inbox_service
+from app.services import invoice_archive as invoice_archive_service
 from app.services.billing import (
     BillingError,
     generate_invoice,
@@ -385,6 +387,41 @@ async def get_invoices(
     _require_manager(principal)
     rows = await ledger.list_invoices(db, tenant_id=principal.tenant_id, include_personnel=False)
     return [await _to_invoice(db, r) for r in rows]
+
+
+def _parse_status_filter(raw: str) -> set[str]:
+    allowed = {"draft", "issued", "paid", "returned"}
+    parts = {part.strip() for part in raw.split(",") if part.strip()}
+    invalid = parts - allowed
+    if not parts or invalid:
+        raise HTTPException(status_code=422, detail="invalid_status_filter")
+    return parts
+
+
+@router.get("/invoices/archive", response_model=InvoiceArchiveOut)
+async def get_invoice_archive(
+    year: int = Query(ge=2000, le=2100),
+    quarter: int | None = Query(default=None, ge=1, le=4),
+    status: str = Query(default="issued,paid"),
+    include_personnel: bool = Query(default=False),
+    principal: Principal = Depends(current_principal),
+    db: AsyncSession = Depends(get_db),
+) -> InvoiceArchiveOut:
+    """Collect invoices for a calendar quarter or full year (by issue date).
+
+    Returns metadata, totals, and PDF URLs for downstream automation / export.
+    """
+    _require_manager(principal)
+    statuses = _parse_status_filter(status)
+    payload = await invoice_archive_service.collect_invoices_for_period(
+        db,
+        tenant_id=principal.tenant_id,
+        year=year,
+        quarter=quarter,
+        statuses=statuses,
+        include_personnel=include_personnel,
+    )
+    return InvoiceArchiveOut(**payload)
 
 
 @router.get("/personnel-invoices/candidates", response_model=list[PersonnelCandidateOut])

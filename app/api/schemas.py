@@ -144,6 +144,43 @@ class InvoiceAgendaItem(BaseModel):
     has_pdf: bool
 
 
+class InvoiceArchiveItem(BaseModel):
+    id: str
+    invoice_number: str
+    kind: str
+    status: str
+    customer_id: str | None = None
+    customer_name: str
+    partner_id: str | None = None
+    project_id: str | None = None
+    project_name: str = ""
+    period_label: str | None = None
+    subtotal_eur: float = 0
+    vat_eur: float = 0
+    amount_eur: float
+    issued_at: str | None = None
+    due_date: str | None = None
+    paid_at: str | None = None
+    has_pdf: bool = False
+    pdf_path: str | None = None
+    pdf_url: str | None = None
+
+
+class InvoiceArchiveOut(BaseModel):
+    year: int
+    quarter: int | None = None
+    period_label: str
+    from_date: str
+    to_date: str
+    status_filter: list[str]
+    include_personnel: bool
+    invoice_count: int
+    total_subtotal_eur: float
+    total_vat_eur: float
+    total_amount_eur: float
+    invoices: list[InvoiceArchiveItem]
+
+
 class InvoiceGenerate(BaseModel):
     project_id: str = Field(min_length=1, max_length=36)
     kind: str = Field(pattern="^(fixed_completion|fixed_milestone_50|tm_hours)$")

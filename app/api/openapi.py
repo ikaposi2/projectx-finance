@@ -7,7 +7,8 @@ from fastapi import FastAPI
 API_VERSION = "0.1.0"
 API_DESCRIPTION = (
     "Finance: invoices (fixed milestone/completion + monthly T&M), reserve, VAT, costs, "
-    "invoice agenda, and **GET /reports/summary** management reporting."
+    "invoice agenda, **GET /invoices/archive** (quarterly/annual collection), and "
+    "**GET /reports/summary** management reporting."
 )
 
 OPENAPI_TAGS: list[dict[str, str]] = [
