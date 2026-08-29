@@ -113,7 +113,7 @@ async def personnel_candidates(
     access_token: str,
     month: str,
 ) -> list[dict]:
-    """External resources with approved hours in the month (by work_date)."""
+    """External resources with approved billable hours in the month (by work_date)."""
     from_day, to_day = _month_bounds(month)
     resources = await fetch_resources(access_token=access_token)
     externals = [r for r in resources if (r.get("kind") or "external") == "external" and r.get("active", True)]
@@ -124,7 +124,9 @@ async def personnel_candidates(
     approved = [
         e
         for e in entries
-        if e.get("status") == "approved" and float(e.get("hours") or 0) > 0
+        if e.get("status") == "approved"
+        and e.get("classification") == "billable"
+        and float(e.get("hours") or 0) > 0
     ]
 
     by_partner: dict[str, float] = {}
