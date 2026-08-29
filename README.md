@@ -62,6 +62,13 @@ uvicorn app.main:app --reload --port 8007
 | PATCH | `/costs/{id}` | manager+ | Update cost / invoice matched+paid flags |
 | DELETE | `/costs/{id}` | manager+ | Remove a monthly cost |
 
+| GET | `/personnel-invoices/candidates` | manager+ | External resources ready for personnel proposal |
+| POST | `/personnel-invoices/generate` | manager+ | Create personnel proposal draft |
+| GET | `/personnel-invoices` | manager+ | List personnel proposals |
+| POST | `/internal/personnel-invoices/run-monthly` | internal cron | Previous month batch (CronJob in cluster) |
+
+See [delivery-lifecycle](../projectX-docs/docs/architecture/delivery-lifecycle.md#personnel-payment-proposals) for product context.
+
 ### Invoice kinds
 
 | Kind | When |
@@ -69,6 +76,7 @@ uvicorn app.main:app --reload --port 8007
 | `fixed_milestone_50` | Fixed price **above** `MILESTONE_THRESHOLD_EUR`, funnel `in_delivery` or `delivered`, no prior milestone draft/issued/paid — amount = 50% of assignment (capped by remaining) |
 | `fixed_completion` | Funnel `delivered`, remaining fixed amount after prior invoices |
 | `tm_hours` | **Time & material only** (no fixed price) — unbilled approved hours in `period_label` (YYYY-MM) × staffing rates; available while funnel is `in_delivery` or `delivered` |
+| `personnel_proposal` | External resource payment proposal (not a customer invoice) |
 
 Fixed-price projects below the milestone threshold are invoiced only via final completion — not as separate hour invoices. Above threshold: optional 50% milestone, then final for the remainder.
 
