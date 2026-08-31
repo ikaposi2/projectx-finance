@@ -54,6 +54,7 @@ from app.services.clients import (
     advance_project_funnel,
     fetch_bookable_projects,
     fetch_project,
+    fetch_time_entries,
     fetch_user_names,
     refuse_time_entry,
 )
@@ -77,15 +78,50 @@ async def current_principal(
         raise HTTPException(status_code=401, detail="invalid_token") from None
 
 
+async def _work_dates_by_entry_id(*, access_token: str) -> dict[str, str]:
+    """Map time entry id → YYYY-MM-DD work_date for compensation display."""
+    try:
+        entries = await fetch_time_entries(
+            access_token=access_token,
+            from_date="2020-01-01",
+            to_date="2035-12-31",
+        )
+    except UpstreamError:
+        return {}
+    out: dict[str, str] = {}
+    for entry in entries:
+        entry_id = str(entry.get("id") or "")
+        work_date = str(entry.get("work_date") or "")[:10]
+        if entry_id and work_date:
+            out[entry_id] = work_date
+    return out
+
+
+async def _known_project_ids(*, access_token: str) -> set[str]:
+    try:
+        projects = await fetch_bookable_projects(access_token=access_token, include_complete=True)
+    except UpstreamError:
+        return set()
+    return {str(p.get("id")) for p in projects if p.get("id")}
+
+
 async def _closed_project_ids(*, access_token: str, project_ids: set[str]) -> set[str]:
     """Project ids whose funnel is settled (closed/paid) — compensation undo blocked."""
+    if not project_ids:
+        return set()
+    known = await _known_project_ids(access_token=access_token)
     closed: set[str] = set()
     for pid in project_ids:
         if not pid:
             continue
+        if known and pid not in known:
+            # Deleted/orphan project — skip upstream fetch (avoids 404 noise).
+            closed.add(pid)
+            continue
         try:
             project = await fetch_project(project_id=pid, access_token=access_token)
         except UpstreamError:
+            closed.add(pid)
             continue
         status = str(project.get("funnel_status") or "").strip()
         if status == "finalizing":
@@ -169,6 +205,7 @@ async def get_compensation(
     if creds is None:
         raise HTTPException(status_code=401, detail="not_authenticated")
     names = await fetch_user_names(access_token=creds.credentials)
+    work_dates = await _work_dates_by_entry_id(access_token=creds.credentials)
     effects = await ledger.list_compensation_effects(db, tenant_id=principal.tenant_id)
     invoiced_ids = await ledger.invoiced_time_entry_ids(db, tenant_id=principal.tenant_id)
     project_ids = {str(row.project_id) for row in effects if row.project_id}
@@ -192,6 +229,7 @@ async def get_compensation(
                 amount_eur=float(row.amount_eur),
                 can_undo=blocked is None,
                 undo_blocked_reason=blocked,
+                work_date=work_dates.get(row.time_entry_id),
                 updated_at=row.updated_at.isoformat() if row.updated_at else None,
             )
         )

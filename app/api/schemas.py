@@ -20,6 +20,7 @@ class CompensationEffectOut(BaseModel):
     amount_eur: float
     can_undo: bool = True
     undo_blocked_reason: str | None = None  # already_invoiced | project_closed
+    work_date: str | None = None
     updated_at: str | None = None
 
 
