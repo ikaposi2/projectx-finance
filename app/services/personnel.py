@@ -12,12 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.db.models import InboxMessage, Invoice, InvoiceLine
 from app.services.billing import BillingError, _format_address, get_or_create_company
+from app.services.costs import upsert_personnel_invoice_cost
 from app.services.clients import fetch_resources, fetch_time_entries
 from app.services.pdf import generate_invoice_pdf
 
 settings = get_settings()
 
 PERSONNEL_KIND = "personnel_proposal"
+# Stable id from projectX-partner DEFAULT_BUDGETS (Unavailable / PTO — not invoiced).
+UNAVAILABLE_BUDGET_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 
 
 def _month_bounds(month: str) -> tuple[str, str]:
@@ -187,23 +190,52 @@ async def personnel_legacy_proposed_hours(
     return round(total, 4)
 
 
-def _is_past_work_date(work_date: str) -> bool:
-    """Only hours on or before today can be proposed for payment."""
+def _is_proposable_work_date(work_date: str, *, month: str) -> bool:
+    """
+    Draft proposals for month M include approved billable hours in M.
+
+    Within the *current* calendar month, exclude future work dates (not done yet).
+    For past or future months, include all days in M — user picks the month explicitly.
+    """
     try:
-        return date.fromisoformat(str(work_date)[:10]) <= date.today()
+        wd = date.fromisoformat(str(work_date)[:10])
     except ValueError:
         return False
+    today = date.today()
+    current_month = f"{today.year:04d}-{today.month:02d}"
+    if month != current_month:
+        return True
+    return wd <= today
 
 
-def _approved_billable_entries(entries: list[dict], *, partner_id: str) -> list[dict]:
+def _is_personnel_proposable_entry(entry: dict) -> bool:
+    """
+    Customer billable hours plus internally approved internal-budget hours.
+
+    Excludes unavailable/PTO (non_billable on the Unavailable budget).
+    """
+    if entry.get("status") != "approved":
+        return False
+    if float(entry.get("hours") or 0) <= 0:
+        return False
+    classification = str(entry.get("classification") or "")
+    if classification == "billable":
+        return True
+    if classification == "non_billable":
+        project_id = str(entry.get("project_id") or "")
+        return bool(project_id) and project_id != UNAVAILABLE_BUDGET_ID
+    return False
+
+
+def _approved_billable_entries(
+    entries: list[dict], *, partner_id: str, month: str
+) -> list[dict]:
     rows = [
         e
         for e in entries
         if str(e.get("partner_id") or "") == partner_id
-        and e.get("status") == "approved"
-        and e.get("classification") == "billable"
-        and float(e.get("hours") or 0) > 0
-        and _is_past_work_date(str(e.get("work_date") or ""))
+        and _is_personnel_proposable_entry(e)
+        and _is_proposable_work_date(str(e.get("work_date") or ""), month=month)
     ]
     return sorted(rows, key=lambda e: (str(e.get("work_date") or ""), str(e.get("id") or "")))
 
@@ -212,12 +244,13 @@ def unbilled_personnel_entries(
     entries: list[dict],
     *,
     partner_id: str,
+    month: str,
     billed_entry_ids: set[str],
     legacy_hours_remaining: float,
 ) -> list[dict[str, Any]]:
     unbilled: list[dict[str, Any]] = []
     legacy_left = max(0.0, legacy_hours_remaining)
-    for entry in _approved_billable_entries(entries, partner_id=partner_id):
+    for entry in _approved_billable_entries(entries, partner_id=partner_id, month=month):
         entry_id = str(entry.get("id") or "")
         if not entry_id or entry_id in billed_entry_ids:
             continue
@@ -242,7 +275,7 @@ async def personnel_candidates(
     access_token: str,
     month: str,
 ) -> list[dict]:
-    """External resources with unbilled approved billable hours in the month."""
+    """External resources with unbilled approved billable + internal-budget hours in the month."""
     from_day, to_day = _month_bounds(month)
     resources = await fetch_resources(access_token=access_token)
     externals = [r for r in resources if (r.get("kind") or "external") == "external" and r.get("active", True)]
@@ -264,6 +297,7 @@ async def personnel_candidates(
         unbilled = unbilled_personnel_entries(
             entries,
             partner_id=partner_id,
+            month=month,
             billed_entry_ids=billed_ids,
             legacy_hours_remaining=legacy_hours,
         )
@@ -332,6 +366,7 @@ async def generate_personnel_proposal(
     unbilled = unbilled_personnel_entries(
         entries,
         partner_id=partner_id,
+        month=month,
         billed_entry_ids=billed_ids,
         legacy_hours_remaining=legacy_hours,
     )
@@ -427,6 +462,17 @@ async def generate_personnel_proposal(
             kind=PERSONNEL_KIND,
             title=f"{invoice.invoice_number} — {month_label}",
         )
+    )
+    await upsert_personnel_invoice_cost(
+        db,
+        tenant_id=tenant_id,
+        personnel_invoice_id=invoice.id,
+        invoice_number=invoice.invoice_number,
+        seller_name=seller_name,
+        month=month,
+        amount_eur=float(invoice.subtotal_eur),
+        vat_eur=float(invoice.vat_eur),
+        vat_rate=float(invoice.vat_rate),
     )
     await db.commit()
     await db.refresh(invoice)

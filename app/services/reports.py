@@ -212,8 +212,7 @@ async def _invoice_period_totals(
             if start <= issued <= end:
                 delivered = round(delivered + _invoice_net(inv), 2)
         if inv.status == "paid":
-            # Mark-paid updates updated_at; fall back to issued_at.
-            paid_at = inv.updated_at or inv.issued_at
+            paid_at = getattr(inv, "paid_at", None) or inv.updated_at or inv.issued_at
             if paid_at is None:
                 continue
             if paid_at.tzinfo is None:

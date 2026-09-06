@@ -122,6 +122,7 @@ class InvoiceOut(BaseModel):
     amount_eur: float
     payment_terms_days: int = 30
     issued_at: str | None = None
+    paid_at: str | None = None
     due_date: str | None = None
     returned_at: str | None = None
     pdf_path: str | None = None
@@ -131,7 +132,8 @@ class InvoiceOut(BaseModel):
 
 
 class InvoiceUpdate(BaseModel):
-    status: str = Field(pattern="^(draft|issued|paid|returned)$")
+    status: str | None = Field(default=None, pattern="^(draft|issued|paid|returned)$")
+    paid_at: str | None = None
 
 
 class InvoiceAgendaItem(BaseModel):
@@ -222,6 +224,10 @@ class MonthlyCostOut(BaseModel):
     notes: str | None = None
     invoice_matched: bool = False
     invoice_paid: bool = False
+    paid_at: str | None = None
+    vat_rate: float = 21
+    vat_eur: float = 0
+    personnel_invoice_id: str | None = None
 
 
 class MonthlyCostCreate(BaseModel):
@@ -231,6 +237,7 @@ class MonthlyCostCreate(BaseModel):
     start_month: str = Field(min_length=7, max_length=7)
     end_month: str | None = Field(default=None, max_length=7)
     notes: str | None = Field(default=None, max_length=500)
+    vat_rate: float | None = Field(default=None, ge=0, le=100)
 
 
 class MonthlyCostUpdate(BaseModel):
@@ -243,6 +250,9 @@ class MonthlyCostUpdate(BaseModel):
     notes: str | None = Field(default=None, max_length=500)
     invoice_matched: bool | None = None
     invoice_paid: bool | None = None
+    paid_at: str | None = None
+    clear_paid_at: bool = False
+    vat_rate: float | None = Field(default=None, ge=0, le=100)
 
 
 class ReportFunnelBucket(BaseModel):

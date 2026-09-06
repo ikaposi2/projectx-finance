@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import Response
@@ -169,6 +169,7 @@ async def _to_invoice(db: AsyncSession, row) -> InvoiceOut:
         amount_eur=float(row.amount_eur or 0),
         payment_terms_days=int(getattr(row, "payment_terms_days", None) or 30),
         issued_at=row.issued_at.isoformat() if getattr(row, "issued_at", None) else None,
+        paid_at=row.paid_at.isoformat() if getattr(row, "paid_at", None) else None,
         due_date=row.due_date.isoformat() if getattr(row, "due_date", None) else None,
         returned_at=row.returned_at.isoformat() if getattr(row, "returned_at", None) else None,
         pdf_path=getattr(row, "pdf_path", None),
@@ -712,22 +713,32 @@ async def patch_invoice(
     row = await ledger.get_invoice(db, tenant_id=principal.tenant_id, invoice_id=invoice_id)
     if row is None:
         raise HTTPException(status_code=404, detail="not_found")
-    lines = await list_invoice_lines(db, row.id) if body.status == "issued" else None
-    try:
-        row = await ledger.update_invoice_status(db, row, status=body.status, lines=lines)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if body.status is not None:
+        lines = await list_invoice_lines(db, row.id) if body.status == "issued" else None
+        try:
+            row = await ledger.update_invoice_status(db, row, status=body.status, lines=lines)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if body.paid_at is not None:
+        parsed = cost_service._parse_paid_at(body.paid_at)
+        if parsed is None:
+            row.paid_at = None
+        else:
+            row.paid_at = parsed
+        await db.commit()
+        await db.refresh(row)
 
-    if body.status in {"issued", "paid"}:
+    status_for_audit = body.status
+    if status_for_audit in {"issued", "paid"}:
         # issued ≈ "sent" today (PDF archived; email delivery not implemented yet)
-        action = "invoice-sent" if body.status == "issued" else "invoice-paid"
+        action = "invoice-sent" if status_for_audit == "issued" else "invoice-paid"
         audit(
             action,
             outcome="success",
             category=["api", "configuration"],
             message=(
                 "invoice marked issued (sent / PDF archived)"
-                if body.status == "issued"
+                if status_for_audit == "issued"
                 else "invoice marked paid"
             ),
             **{
@@ -735,7 +746,7 @@ async def patch_invoice(
                 "user.email": principal.email,
                 "organization.id": principal.tenant_id,
                 "invoice.id": invoice_id,
-                "invoice.status": body.status,
+                "invoice.status": status_for_audit or row.status,
                 "project.id": row.project_id,
             },
         )
@@ -744,9 +755,9 @@ async def patch_invoice(
     project_id = (row.project_id or "").strip()
     if project_id:
         target: str | None = None
-        if body.status == "issued":
+        if status_for_audit == "issued":
             target = "invoiced"
-        elif body.status == "paid":
+        elif status_for_audit == "paid":
             target = "closed"
         if target:
             try:
@@ -789,6 +800,10 @@ def _to_cost(row) -> MonthlyCostOut:
         notes=row.notes,
         invoice_matched=bool(row.invoice_matched),
         invoice_paid=bool(row.invoice_paid),
+        paid_at=row.paid_at.isoformat() if getattr(row, "paid_at", None) else None,
+        vat_rate=float(getattr(row, "vat_rate", None) or 21),
+        vat_eur=float(getattr(row, "vat_eur", None) or 0),
+        personnel_invoice_id=getattr(row, "personnel_invoice_id", None),
     )
 
 
@@ -833,6 +848,7 @@ async def post_cost(
             start_month=body.start_month,
             end_month=body.end_month,
             notes=body.notes,
+            vat_rate=body.vat_rate,
         )
     except CostError as exc:
         raise HTTPException(status_code=422, detail=exc.detail) from exc
@@ -863,6 +879,9 @@ async def patch_cost(
             notes=body.notes,
             invoice_matched=body.invoice_matched,
             invoice_paid=body.invoice_paid,
+            paid_at=cost_service._parse_paid_at(body.paid_at) if body.paid_at is not None else None,
+            clear_paid_at=body.clear_paid_at,
+            vat_rate=body.vat_rate,
         )
     except CostError as exc:
         raise HTTPException(status_code=422, detail=exc.detail) from exc

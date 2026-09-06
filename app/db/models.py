@@ -85,6 +85,7 @@ class Invoice(Base):
     payment_terms_days: Mapped[int] = mapped_column(Integer, default=30)
     status: Mapped[str] = mapped_column(String(40), default="draft")
     issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     due_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     returned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     pdf_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -152,6 +153,8 @@ class MonthlyCost(Base):
     tenant_id: Mapped[str] = mapped_column(String(36), index=True)
     label: Mapped[str] = mapped_column(String(200))
     amount_eur: Mapped[float] = mapped_column(Float, default=0.0)
+    vat_rate: Mapped[float] = mapped_column(Float, default=21.0)
+    vat_eur: Mapped[float] = mapped_column(Float, default=0.0)
     # one_off | recurring
     cadence: Mapped[str] = mapped_column(String(20), default="one_off")
     # YYYY-MM — month for one_off, first month for recurring
@@ -161,6 +164,9 @@ class MonthlyCost(Base):
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
     invoice_matched: Mapped[bool] = mapped_column(Boolean, default=False)
     invoice_paid: Mapped[bool] = mapped_column(Boolean, default=False)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set when created from a personnel draft invoice (factuurvoorstel).
+    personnel_invoice_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

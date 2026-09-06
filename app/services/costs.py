@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +18,20 @@ class CostError(Exception):
     def __init__(self, detail: str):
         self.detail = detail
         super().__init__(detail)
+
+
+def _parse_paid_at(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    v = value.strip()
+    if not v:
+        return None
+    if len(v) == 10:
+        return datetime.fromisoformat(v).replace(tzinfo=timezone.utc)
+    dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def _validate_month(value: str | None, *, field: str) -> str | None:
@@ -69,6 +85,11 @@ async def list_costs_for_month(
     return [r for r in result if applies_to_month(r, month_n)]
 
 
+def _sync_cost_vat(row: MonthlyCost) -> None:
+    rate = float(row.vat_rate or 0)
+    row.vat_eur = round(float(row.amount_eur or 0) * rate / 100.0, 2)
+
+
 async def create_cost(
     db: AsyncSession,
     *,
@@ -79,6 +100,7 @@ async def create_cost(
     start_month: str,
     end_month: str | None = None,
     notes: str | None = None,
+    vat_rate: float | None = None,
 ) -> MonthlyCost:
     label_n = (label or "").strip()
     if not label_n:
@@ -101,6 +123,7 @@ async def create_cost(
         tenant_id=tenant_id,
         label=label_n,
         amount_eur=float(amount_eur),
+        vat_rate=float(vat_rate if vat_rate is not None else 21.0),
         cadence=cadence_n,
         start_month=start,
         end_month=end,
@@ -108,6 +131,7 @@ async def create_cost(
         invoice_matched=False,
         invoice_paid=False,
     )
+    _sync_cost_vat(row)
     db.add(row)
     await db.commit()
     await db.refresh(row)
@@ -138,6 +162,9 @@ async def update_cost(
     notes: str | None = None,
     invoice_matched: bool | None = None,
     invoice_paid: bool | None = None,
+    paid_at: datetime | None = None,
+    clear_paid_at: bool = False,
+    vat_rate: float | None = None,
 ) -> MonthlyCost:
     if label is not None:
         label_n = label.strip()
@@ -170,6 +197,20 @@ async def update_cost(
         row.invoice_matched = invoice_matched
     if invoice_paid is not None:
         row.invoice_paid = invoice_paid
+        if invoice_paid and row.paid_at is None:
+            row.paid_at = datetime.now(timezone.utc)
+        elif not invoice_paid:
+            row.paid_at = None
+    if clear_paid_at:
+        row.paid_at = None
+    elif paid_at is not None:
+        row.paid_at = paid_at
+    if vat_rate is not None:
+        if vat_rate < 0:
+            raise CostError("invalid_vat_rate")
+        row.vat_rate = float(vat_rate)
+    if amount_eur is not None or vat_rate is not None:
+        _sync_cost_vat(row)
     if row.cadence == "recurring" and row.end_month and row.end_month < row.start_month:
         raise CostError("invalid_end_month")
     await db.commit()
@@ -180,3 +221,68 @@ async def update_cost(
 async def delete_cost(db: AsyncSession, row: MonthlyCost) -> None:
     await db.delete(row)
     await db.commit()
+
+
+async def get_cost_by_personnel_invoice(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    personnel_invoice_id: str,
+) -> MonthlyCost | None:
+    return await db.scalar(
+        select(MonthlyCost).where(
+            MonthlyCost.tenant_id == tenant_id,
+            MonthlyCost.personnel_invoice_id == personnel_invoice_id,
+        )
+    )
+
+
+async def upsert_personnel_invoice_cost(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    personnel_invoice_id: str,
+    invoice_number: str,
+    seller_name: str,
+    month: str,
+    amount_eur: float,
+    vat_eur: float = 0.0,
+    vat_rate: float = 21.0,
+) -> MonthlyCost:
+    """Declare a pending supplier cost for a personnel draft invoice (not counted until paid)."""
+    month_n = _validate_month(month, field="month")
+    if not month_n:
+        raise CostError("invalid_month")
+    label = f"{invoice_number} — {seller_name} ({month_n})"
+    notes = f"Personnel draft invoice {invoice_number}"
+    existing = await get_cost_by_personnel_invoice(
+        db, tenant_id=tenant_id, personnel_invoice_id=personnel_invoice_id
+    )
+    if existing is not None:
+        existing.label = label
+        existing.amount_eur = float(amount_eur)
+        existing.vat_eur = float(vat_eur)
+        existing.vat_rate = float(vat_rate)
+        existing.start_month = month_n
+        existing.cadence = "one_off"
+        existing.end_month = None
+        existing.notes = notes
+        await db.flush()
+        return existing
+    row = MonthlyCost(
+        tenant_id=tenant_id,
+        label=label,
+        amount_eur=float(amount_eur),
+        vat_eur=float(vat_eur),
+        vat_rate=float(vat_rate),
+        cadence="one_off",
+        start_month=month_n,
+        end_month=None,
+        notes=notes,
+        invoice_matched=False,
+        invoice_paid=False,
+        personnel_invoice_id=personnel_invoice_id,
+    )
+    db.add(row)
+    await db.flush()
+    return row

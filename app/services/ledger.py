@@ -376,6 +376,11 @@ async def update_invoice_status(
             row.pdf_path = generate_invoice_pdf(row, lines)
     elif status == "returned":
         row.returned_at = now
+    elif status == "paid":
+        if row.paid_at is None or row.status != "paid":
+            row.paid_at = now
+    elif status == "issued" and row.status == "paid":
+        row.paid_at = None
 
     row.status = status
     await db.commit()
