@@ -105,8 +105,9 @@ def setup_observability(app: FastAPI) -> None:
 
     try:
         from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+        from app.db.session import engine
 
-        SQLAlchemyInstrumentor().instrument()
+        SQLAlchemyInstrumentor().instrument(engines=[engine.sync_engine])
     except Exception:
         pass
 
